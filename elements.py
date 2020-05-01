@@ -1,268 +1,198 @@
-from PySide2.QtWidgets import QGraphicsItem, QGraphicsRectItem, QGraphicsView, QGraphicsScene, QWidget, QFormLayout, \
-    QLineEdit, QSpinBox, QGraphicsEllipseItem, QGraphicsPathItem, QGraphicsItemGroup, QGraphicsLineItem
-from PySide2.QtCore import QRectF, QSize, Qt, QPoint, QMarginsF, QPointF, QTimer, QSizeF
-from PySide2.QtGui import QPen, QPainter, QMouseEvent, QPolygon, QPainterPath, QPainterPathStroker
+from PySide2.QtWidgets import QWidget, QOpenGLWidget
+from PySide2.QtCore import QRect, QSize, Qt, QPoint, QMargins, QLine
+from PySide2.QtGui import QColor, QPen, QPainter, QMouseEvent, QPolygon, QPainterPath, QVector2D, QPainterPathStroker
 from descriptors import *
 
-_GATE_SIZE = QSizeF(100, 100)
-_EXT_LENGTH = 20
 
+class SchematicEditor(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
 
-def _pin_pos(rect, x, y):
-    margins = (_EXT_LENGTH, ) * 4
-    rect = rect.marginsAdded(QMarginsF(*margins))
-    return QPointF(rect.x() + rect.width() * x - Pin._SIZE.width() / 2, rect.y() + rect.height() * y - Pin._SIZE.height() / 2)
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.StrongFocus)
 
+        self.elements = list()
+        self.pins = list()
+        self.wires = list()
+        self.junctions = list()
 
-def _make_wire_item(x1, y1, x2, y2):
-    path = QPainterPath()
+        self.guidepoints = list()
+        self.guidelines = list()
+        self.wiring_assistant = False
 
-    path.moveTo(x1, y1)
-    path.lineTo(x2, y2)
+        self.selected_elements = list()
+        self.moved = False
+        self.grabbed_element = None
+        self.grab_offset = None
+        self.closest_point = None
 
-    path_item = QGraphicsPathItem(path)
+        self.elements.append(NotElement(None))
+        self.wires.append(QLine(100, 100, 200, 100))
 
-    stroker = QPainterPathStroker(QPen(Qt.black, 5, c=Qt.RoundCap))
-    stroke_path = stroker.createStroke(path)
-    stroke_item = QGraphicsPathItem(stroke_path)
+    def _draw_wire(self, painter, line):
+        p = QPen(Qt.black, 8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        path = QPainterPath(line.p1())
+        path.lineTo(line.p2())
+        stroker = QPainterPathStroker(p)
+        stroke = stroker.createStroke(path)
+        painter.setPen(QPen(Qt.black, 2))
+        painter.fillPath(stroke, Qt.white)
+        painter.drawPath(stroke)
 
-    path_item.setPen(QPen(Qt.white, 5, c=Qt.RoundCap))
-    stroke_item.setPen(QPen(Qt.black, 1.5, c=Qt.RoundCap))
+    def paintEvent(self, *args):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.HighQualityAntialiasing)
 
-    group = QGraphicsItemGroup()
-    group.addToGroup(path_item)
-    group.addToGroup(stroke_item)
+        r = self.rect()
+        painter.fillRect(r, Qt.white)
 
-    group.setFlag(QGraphicsItem.ItemIsSelectable)
+        for element in self.elements:
+            painter.translate(element.bounding_box.topLeft())
+            element.paint(painter)
+            painter.translate(-element.bounding_box.topLeft())
 
-    return group
+        for wire in self.wires:
+            self._draw_wire(painter, wire)
 
+        painter.setPen(QPen(Qt.red, 1, Qt.DashLine))
+        painter.setBrush(Qt.transparent)
+        for element in self.selected_elements:
+            bb = element.bounding_box
+            bb = bb.marginsAdded(QMargins(2, 2, 1, 1))
+            painter.drawRect(bb)
 
-class Schematic:
-    def __init__(self):
-        self.root = Composite()
-        self.scene = QGraphicsScene()
+        if self.wiring_assistant:
+            painter.setPen(QPen(Qt.red, 1, Qt.PenStyle.DotLine))
+            for line in self.guidelines:
+                painter.drawLine(line)
 
-    def add_element(self, element):
-        self.root.add_child(element.desc)
-        self.scene.addItem(element)
+            painter.setPen(QPen(Qt.red, 1, Qt.PenStyle.SolidLine))
+            for p in self.guidepoints:
+                painter.drawEllipse(p.x() - 4, p.y() - 4, 8, 8)
 
+            if self.closest_point is not None:
+                p = self.closest_point
+                painter.drawEllipse(p.x() - 4, p.y() - 4, 8, 8)
 
-class SchematicEditor(QGraphicsView):
-    def __init__(self, schematic):
-        super().__init__()
-        self.schematic = schematic
-        self.setScene(schematic.scene)
+    def _pick(self, p):
+        for element in self.elements:
+            if element.bounding_box.contains(p):
+                return element
+        return None
 
-        self.setRenderHint(QPainter.Antialiasing)
-        # self.setDragMode(QGraphicsView.ScrollHandDrag)
-        self.setDragMode(QGraphicsView.RubberBandDrag)
+    def _closest_point(self, line, point):
+        d = QVector2D(line.p2() - line.p1())
+        d.normalize()
+        v = QVector2D(point - line.p1())
+        return line.p1() + (d * QVector2D.dotProduct(d, v)).toPoint()
 
-    def mouseMoveEvent(self, event: QMouseEvent):
-        super().mouseMoveEvent(event)
+    def _closest_guideline_point(self, point):
+        currd = None
+        closest = None
+        for line in self.guidelines:
+            p = self._closest_point(line, point)
+            d = QVector2D(p - point).lengthSquared()
+            if (currd is None or d < currd) and d < 2500:
+                currd = d
+                closest = p
+        return closest
 
+    def _closest_assist_point(self, point):
+        gp = self._closest_guideline_point(point)
 
-class Pin(QGraphicsEllipseItem):
-    _SIZE = QSizeF(10, 10)
+        d1 = QVector2D(gp - point).lengthSquared()
 
-    def __init__(self, element, path):
-        super().__init__(element)
-        self.path = path
+    def mousePressEvent(self, e):
+        self.grabbed_element = self._pick(e.pos())
+        if self.grabbed_element is not None:
+            self.grab_offset = self.grabbed_element.bounding_box.topLeft() - e.pos()
 
-        self.setPen(QPen(Qt.black, 2))
-        self.setBrush(Qt.white)
-        self.setRect(QRectF(QPoint(), self._SIZE))
-
-        self.setFlag(QGraphicsItem.ItemIsSelectable)
-
-        def _update_pin():
-            lit = element.simulator.get_pin_value(path) > 0
-            self.setBrush(Qt.green if lit else Qt.white)
+    def mouseMoveEvent(self, e):
+        if self.grabbed_element is not None:
+            self.grabbed_element.bounding_box.moveTopLeft(
+                e.pos() + self.grab_offset)
+            self.moved = True
             self.update()
 
-        element.simulator.observe(path, _update_pin)
+        self.closest_point = self._closest_guideline_point(e.pos())
+        self.update()
+
+    def mouseReleaseEvent(self, e):
+        moved = self.moved
+
+        if self.grabbed_element is not None:
+            self.grabbed_element = None
+            self.moved = False
+
+        if not moved:
+            self.selected_elements = list()
+            for element in self.elements:
+                bb = element.bounding_box
+                if bb.contains(e.pos()):
+                    self.selected_elements.append(element)
+            self.update()
+
+    def _build_guidelines(self):
+        self.guidelines = list()
+        for element in self.elements:
+            for p in element.guideline_points():
+                self.guidelines.append(
+                    QLine(0, p.y(), self.rect().width(), p.y()))
+                self.guidelines.append(
+                    QLine(p.x(), 0, p.x(), self.rect().height()))
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._build_guidelines()
+        self.update()
+
+    def keyReleaseEvent(self, e):
+        if e.key() == Qt.Key_W:
+            self.wiring_assistant ^= True
+            self._build_guidelines()
+            self.update()
 
 
-class Element(QGraphicsRectItem):
-    def __init__(self, simulator, desc):
-        super().__init__()
-        self.simulator = simulator
-        self.desc = desc
-        self.item_move_callback = None
+class Element:
+    def __init__(self, descriptor):
+        self.descriptor = descriptor
+        self.bounding_box = QRect()
+        self.schematic = None
 
-        self.setFlag(QGraphicsItem.ItemIsSelectable)
-        self.setFlag(QGraphicsItem.ItemIsMovable)
-        self.setFlag(QGraphicsItem.ItemSendsGeometryChanges)
-        self.setPen(QPen(Qt.transparent))
-
-    def editor(self):
+    def pins(self):
         raise NotImplementedError
 
-    def itemChange(self, change, value):
-        if change == QGraphicsItem.ItemPositionHasChanged:
-            if callable(self.item_move_callback):
-                self.item_move_callback()
-            return value
-        return value
+    def paint(self, painter):
+        raise NotImplementedError
+
+
+class Pin:
+    def __init__(self, pin, direction, position):
+        self.pin = pin
+        self.direction = direction
+        self.position = position
 
 
 class NotElement(Element):
-    _SIZE = _GATE_SIZE
+    SIZE = QSize(100, 75)
 
-    def __init__(self, simulator, desc):
-        super().__init__(simulator, desc)
+    def __init__(self, descriptor):
+        super().__init__(descriptor)
+        self.bounding_box = QRect(QPoint(), self.SIZE)
 
-        self.setRect(QRectF(QPoint(), self._SIZE))
-        r = self.rect()
-        pen = QPen(Qt.black, 2, c=Qt.RoundCap)
-        ext1 = QGraphicsLineItem(r.left() - _EXT_LENGTH, r.height() / 2,
-                                 r.left(), r.height() / 2, self)
-        ext2 = QGraphicsLineItem(r.right() + _EXT_LENGTH, r.height() / 2,
-                                 r.right(), r.height() / 2, self)
-        ext1.setPen(pen)
-        ext2.setPen(pen)
-        ext1.setFlag(QGraphicsItem.ItemStacksBehindParent)
-        ext2.setFlag(QGraphicsItem.ItemStacksBehindParent)
+    def pins(self):
+        pass
 
-        pin = Pin(self, desc.get_pin('in'))
-        pin.setPos(_pin_pos(self.rect(), 0, 0.5))
-
-        pin = Pin(self, desc.get_pin('out'))
-        pin.setPos(_pin_pos(self.rect(), 1, 0.5))
-
-    def editor(self):
-        w = QWidget()
-        l = QFormLayout(w)
-
-        width = QSpinBox()
-        width.setMinimum(1)
-        width.setMaximum(MAX_WIDTH)
-        width.setValue(self.desc.width)
-
-        l.addRow('Width', width)
-
-        def _set_width(value):
-            self.desc.width = value
-
-        width.valueChanged.connect(_set_width)
-
-        return w
-
-    def paint(self, painter, *args):
-        super().paint(painter, *args)
-
+    def paint(self, painter):
         painter.setPen(QPen(Qt.black, 2))
         painter.setBrush(Qt.white)
 
         path = QPainterPath()
-        r = self.rect()
-        path.moveTo(r.topLeft())
-        path.lineTo(r.topRight() + QPointF(-5, r.height() / 2))
-        path.lineTo(r.bottomLeft())
+        s = self.SIZE
+        path.moveTo(QPoint())
+        path.lineTo(QPoint(s.width() - 5, s.height() / 2))
+        path.lineTo(QPoint(0, s.height()))
         path.closeSubpath()
         painter.drawPath(path)
 
-        painter.drawEllipse(QPointF(r.right() - 5, r.height() / 2), 5, 5)
-
-
-class GateElement(Element):
-    _SIZE = _GATE_SIZE
-
-    def __init__(self, simulator, desc):
-        super().__init__(simulator, desc)
-
-        self.setRect(QRectF(QPoint(), self._SIZE))
-
-        self._inputs = list()
-
-        r = self.rect()
-
-        pin = Pin(self, desc.get_pin('out'))
-        pin.setPos(_pin_pos(self.rect(), 1, 0.5))
-        pin.setZValue(1)
-
-        pen = QPen(Qt.black, 2, c=Qt.RoundCap)
-        ext1 = QGraphicsLineItem(r.right() + _EXT_LENGTH, r.height() / 2,
-                                 r.right(), r.height() / 2, self)
-        ext1.setPen(pen)
-        ext1.setFlag(QGraphicsItem.ItemStacksBehindParent)
-
-        self._setup_inputs()
-
-    def _setup_inputs(self):
-        for inp in self._inputs:
-            self.scene().removeItem(inp[0])
-            self.scene().removeItem(inp[1])
-
-        self._inputs = list()
-
-        n = self.desc.num_inputs
-
-        for i in range(n):
-            pos = _pin_pos(self.rect(), 0, (2 * i + 1) / (n * 2))
-
-            pin = Pin(self, self.desc.get_pin(f'in{i}'))
-            pin.setPos(pos)
-
-            pen = QPen(Qt.black, 2, c=Qt.RoundCap)
-            r = self.rect()
-            yy = r.height() * (2 * i + 1) / (n * 2)
-            ext = QGraphicsLineItem(pos.x() + Pin._SIZE.width() / 2, pos.y() + Pin._SIZE.height() / 2,
-                                    r.width() / 3, pos.y() + Pin._SIZE.height() / 2, self)
-            ext.setPen(pen)
-            ext.setFlag(QGraphicsItem.ItemStacksBehindParent)
-            self._inputs.append((pin, ext))
-
-    def _set_num_inputs(self, value):
-        self.desc.num_inputs = value
-        self._setup_inputs()
-
-    def editor(self):
-        w = QWidget()
-        l = QFormLayout(w)
-
-        width = QSpinBox()
-        width.setMinimum(1)
-        width.setMaximum(MAX_WIDTH)
-        width.setValue(self.desc.width)
-
-        def _set_width(value):
-            self.desc.width = value
-
-        width.valueChanged.connect(_set_width)
-        l.addRow('Width', width)
-
-        num_inputs = QSpinBox()
-        num_inputs.setMinimum(2)
-        num_inputs.setValue(self.desc.num_inputs)
-        num_inputs.valueChanged.connect(self._set_num_inputs)
-        l.addRow('Number of inputs', num_inputs)
-
-        return w
-
-    def paint(self, painter, *args):
-        super().paint(painter, *args)
-
-        kind = self.desc.kind
-        painter.setPen(QPen(Qt.black, 2))
-        path = QPainterPath()
-        r = self.rect()
-
-        if kind == 'and':
-            path.moveTo(r.topLeft())
-            path.lineTo(r.center().x(), r.top())
-            path.quadTo(r.topRight(), QPoint(r.right(), r.height() / 2))
-            path.quadTo(r.bottomRight(), QPoint(r.width() / 2, r.bottom()))
-            path.lineTo(r.bottomLeft())
-            path.closeSubpath()
-        elif kind == 'or':
-            path.moveTo(r.topLeft())
-            path.lineTo(r.width() / 4, r.top())
-            path.quadTo(QPoint(r.width() / 4 * 3, r.top()),
-                        QPoint(r.right(), r.height() / 2))
-            path.quadTo(QPoint(r.width() / 4 * 3, r.bottom()),
-                        QPoint(r.width() / 4, r.bottom()))
-            path.lineTo(r.bottomLeft())
-            path.quadTo(r.center(), r.topLeft())
-
-        painter.drawPath(path)
+        painter.drawEllipse(QPoint(s.width() - 2, s.height() / 2), 3, 3)

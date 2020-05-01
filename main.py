@@ -12,7 +12,7 @@ def make_title():
 
 
 ELEMENTS = {
-    'Gates': {'Not': NotElement, 'And': GateElement}
+
 }
 
 
@@ -52,45 +52,23 @@ if __name__ == "__main__":
     w.addDockWidget(Qt.LeftDockWidgetArea, dw)
 
     sim = Simulator()
-    schem = Schematic()
-    sim.root = schem.root
     g = Gate('or', 1, 2, False)
     g.name = 'gate'
-    el = GateElement(sim, g)
-    schem.add_element(el)
-    ed = SchematicEditor(schem)
+    sim.root = g
     t = QTimer(w)
 
+    ed = SchematicEditor()
+    w.setCentralWidget(ed)
+
     edd = None
-
-    def _on_select():
-        global edd
-        it = ed.scene().selectedItems()
-
-        if len(it) > 0:
-            it = it[0]
-        else:
-            it = None
-
-        if isinstance(it, Element):
-            edd = QDockWidget()
-            edd.setWidget(it.editor())
-            edd.setWindowTitle('Element properties')
-            edd.setFeatures(QDockWidget.DockWidgetMovable |
-                            QDockWidget.DockWidgetFloatable)
-            w.addDockWidget(Qt.LeftDockWidgetArea, edd)
-        elif edd is not None:
-            w.removeDockWidget(edd)
-            edd = None
-
-    ed.scene().selectionChanged.connect(_on_select)
 
     ticks = 0
 
     def _on_timer():
         global ticks
-        ticks += 1000
         sim.burst()
+        ticks += BURST_SIZE
+        ed.update()
 
     t.timeout.connect(_on_timer)
 
@@ -127,8 +105,6 @@ if __name__ == "__main__":
     toolbar.addSeparator()
     toolbar.addWidget(lbl)
     w.addToolBar(toolbar)
-
-    w.setCentralWidget(ed)
 
     w.setWindowTitle(make_title())
     w.show()
