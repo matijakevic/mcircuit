@@ -31,6 +31,8 @@ class SchematicEditor(QWidget):
 
         self._wire_start = None
 
+        self.select_rect = None
+
         self.selected_elements = list()
         self.moved = False
         self.grabbed_element = None
@@ -76,6 +78,11 @@ class SchematicEditor(QWidget):
             bb = bb.marginsAdded(QMargins(2, 2, 1, 1))
             painter.drawRect(bb)
 
+        if self.select_rect is not None:
+            painter.setBrush(QColor(0, 0, 255, 64))
+            painter.setPen(QColor(0, 0, 255, 128))
+            painter.drawRect(self.select_rect)
+
         if self.wiring_mode:
             painter.setPen(QPen(Qt.red, 1, Qt.PenStyle.DotLine))
             for line in self.guidelines:
@@ -120,6 +127,8 @@ class SchematicEditor(QWidget):
             self.grabbed_element = self._pick(e.pos())
             if self.grabbed_element is not None:
                 self.grab_offset = self.grabbed_element.bounding_box.topLeft() - e.pos()
+            else:
+                self.select_rect = QRect(e.pos(), QSize(0, 0))
 
     def mouseMoveEvent(self, e):
         if self.wiring_mode:
@@ -134,6 +143,14 @@ class SchematicEditor(QWidget):
                 self.grabbed_element.bounding_box.moveTopLeft(
                     e.pos() + self.grab_offset)
                 self.moved = True
+                self.update()
+            elif self.select_rect is not None:
+                self.select_rect.setBottomRight(e.pos())
+                if self.select_rect.size() != QSize(0, 0):
+                    self.selected_elements = list()
+                    for element in self.elements:
+                        if self.select_rect.contains(element.bounding_box):
+                            self.selected_elements.append(element)
                 self.update()
 
     def mouseReleaseEvent(self, e):
@@ -155,10 +172,18 @@ class SchematicEditor(QWidget):
 
             if not moved:
                 self.selected_elements = list()
-                for element in self.elements:
-                    bb = element.bounding_box
-                    if bb.contains(e.pos()):
-                        self.selected_elements.append(element)
+                if self.select_rect is not None and self.select_rect.size() != QSize(0, 0):
+                    print(self.select_rect)
+                    for element in self.elements:
+                        if self.select_rect.contains(element.bounding_box):
+                            self.selected_elements.append(element)
+                else:
+                    for element in self.elements:
+                        bb = element.bounding_box
+                        if bb.contains(e.pos()):
+                            self.selected_elements.append(element)
+                            break
+                self.select_rect = None
                 self.update()
 
     def _build_guidelines(self):
@@ -201,6 +226,11 @@ class SchematicEditor(QWidget):
                 self._leave_wiring_mode()
                 self.wiring_mode = False
             self.update()
+        elif e.key() == Qt.Key_Escape:
+            if self.wiring_mode:
+                self._leave_wiring_mode()
+                self.wiring_mode = False
+                self.update()
 
 
 class Element:

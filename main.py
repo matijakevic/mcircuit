@@ -60,7 +60,8 @@ if __name__ == "__main__":
 
     ed = SchematicEditor()
     w.setCentralWidget(ed)
-    ed.elements.append(NotElement(g))
+    for i in range(10):
+        ed.elements.append(NotElement(g))
 
     edd = None
 
