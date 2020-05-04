@@ -8,6 +8,8 @@ _TURN_PENALTY = 10
 
 # A-star grid pathfinding algorithm with Manhattan distance heuristics.
 # Terminates if the cost passes the threshold.
+# Currently not used, but might be useful later for
+# wire pathfinding.
 def pathfind(start, goal, collide_check_func):
     if collide_check_func(*goal) or collide_check_func(*start):
         return None
