@@ -11,6 +11,10 @@ def _closest_point(line, point):
     return line.p1() + (d * QVector2D.dotProduct(d, v)).toPoint()
 
 
+def _is_point_on_line(line, point):
+    return QVector2D(line.p1() - point).length() + QVector2D(line.p2() - point).length() == QVector2D(line.p2() - line.p1()).length()
+
+
 class SchematicEditor(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -56,6 +60,13 @@ class SchematicEditor(QWidget):
         painter.fillPath(stroke, fill_color)
         painter.drawPath(stroke)
 
+    def _draw_pin(self, painter, point):
+        fill_color = QColor(255, 255, 255)
+        outline_color = QColor(0, 0, 0)
+        painter.setBrush(fill_color)
+        painter.setPen(QPen(outline_color, 2))
+        painter.drawEllipse(point.x() - 4, point.y() - 4, 8, 8)
+
     def paintEvent(self, *args):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.HighQualityAntialiasing)
@@ -67,6 +78,11 @@ class SchematicEditor(QWidget):
             painter.translate(element.bounding_box.topLeft())
             element.paint(painter)
             painter.translate(-element.bounding_box.topLeft())
+
+        for element in self.elements:
+            for pin in element.pins():
+                p = pin.position + element.bounding_box.topLeft()
+                self._draw_pin(painter, p)
 
         for wire in self.wires:
             self._draw_wire(painter, wire, False)
@@ -111,6 +127,8 @@ class SchematicEditor(QWidget):
         for line in self.guidelines:
             p = _closest_point(line, point)
             d = QVector2D(p - point).lengthSquared()
+            if not _is_point_on_line(line, p):
+                continue
             if (currd is None or d < currd) and d < 2500:
                 currd = d
                 closest = p
@@ -173,7 +191,6 @@ class SchematicEditor(QWidget):
             if not moved:
                 self.selected_elements = list()
                 if self.select_rect is not None and self.select_rect.size() != QSize(0, 0):
-                    print(self.select_rect)
                     for element in self.elements:
                         if self.select_rect.contains(element.bounding_box):
                             self.selected_elements.append(element)
@@ -191,10 +208,24 @@ class SchematicEditor(QWidget):
         for element in self.elements:
             for pin in element.pins():
                 p = pin.position + element.bounding_box.topLeft()
-                self.guidelines.append(
-                    QLine(0, p.y(), self.rect().width(), p.y()))
-                self.guidelines.append(
-                    QLine(p.x(), 0, p.x(), self.rect().height()))
+                if pin.direction.y() == 0:
+                    if pin.direction.x() > 0:
+                        self.guidelines.append(
+                            QLine(p.x(), p.y(), self.rect().width(), p.y()))
+                    else:
+                        self.guidelines.append(
+                            QLine(p.x(), p.y(), 0, p.y()))
+                    self.guidelines.append(
+                        QLine(p.x(), 0, p.x(), self.rect().height()))
+                else:
+                    if pin.direction.y() > 0:
+                        self.guidelines.append(
+                            QLine(p.x(), p.y(), p.x(), self.rect().height()))
+                    else:
+                        self.guidelines.append(
+                            QLine(p.x(), p.y(), p.x(), 0))
+                    self.guidelines.append(
+                        QLine(0, p.y(), self.rect().width(), p.y()))
         for wire in self.wires:
             for p in (wire.p1(), wire.p2()):
                 self.guidelines.append(
