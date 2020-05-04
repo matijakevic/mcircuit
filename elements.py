@@ -4,6 +4,13 @@ from PySide2.QtGui import QColor, QPen, QPainter, QMouseEvent, QPolygon, QPainte
 from descriptors import *
 
 
+def _closest_point(line, point):
+    d = QVector2D(line.p2() - line.p1())
+    d.normalize()
+    v = QVector2D(point - line.p1())
+    return line.p1() + (d * QVector2D.dotProduct(d, v)).toPoint()
+
+
 class SchematicEditor(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -18,25 +25,33 @@ class SchematicEditor(QWidget):
 
         self.guidepoints = list()
         self.guidelines = list()
-        self.wiring_assistant = False
+        self._ghost_wire = None
+        self.wiring_mode = False
+        self.closest_point = None
+
+        self._wire_start = None
 
         self.selected_elements = list()
         self.moved = False
         self.grabbed_element = None
         self.grab_offset = None
-        self.closest_point = None
 
-        self.elements.append(NotElement(None))
-        self.wires.append(QLine(100, 100, 200, 100))
-
-    def _draw_wire(self, painter, line):
+    def _draw_wire(self, painter, line, ghost):
         p = QPen(Qt.black, 8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
         path = QPainterPath(line.p1())
         path.lineTo(line.p2())
         stroker = QPainterPathStroker(p)
         stroke = stroker.createStroke(path)
-        painter.setPen(QPen(Qt.black, 2))
-        painter.fillPath(stroke, Qt.white)
+
+        fill_color = QColor(255, 255, 255)
+        outline_color = QColor(0, 0, 0)
+
+        if ghost:
+            fill_color.setAlphaF(0.5)
+            outline_color.setAlphaF(0.5)
+
+        painter.setPen(QPen(outline_color, 2))
+        painter.fillPath(stroke, fill_color)
         painter.drawPath(stroke)
 
     def paintEvent(self, *args):
@@ -52,7 +67,7 @@ class SchematicEditor(QWidget):
             painter.translate(-element.bounding_box.topLeft())
 
         for wire in self.wires:
-            self._draw_wire(painter, wire)
+            self._draw_wire(painter, wire, False)
 
         painter.setPen(QPen(Qt.red, 1, Qt.DashLine))
         painter.setBrush(Qt.transparent)
@@ -61,10 +76,13 @@ class SchematicEditor(QWidget):
             bb = bb.marginsAdded(QMargins(2, 2, 1, 1))
             painter.drawRect(bb)
 
-        if self.wiring_assistant:
+        if self.wiring_mode:
             painter.setPen(QPen(Qt.red, 1, Qt.PenStyle.DotLine))
             for line in self.guidelines:
                 painter.drawLine(line)
+
+            if self._ghost_wire:
+                self._draw_wire(painter, self._ghost_wire, True)
 
             painter.setPen(QPen(Qt.red, 1, Qt.PenStyle.SolidLine))
             for p in self.guidepoints:
@@ -80,17 +98,11 @@ class SchematicEditor(QWidget):
                 return element
         return None
 
-    def _closest_point(self, line, point):
-        d = QVector2D(line.p2() - line.p1())
-        d.normalize()
-        v = QVector2D(point - line.p1())
-        return line.p1() + (d * QVector2D.dotProduct(d, v)).toPoint()
-
     def _closest_guideline_point(self, point):
         currd = None
         closest = None
         for line in self.guidelines:
-            p = self._closest_point(line, point)
+            p = _closest_point(line, point)
             d = QVector2D(p - point).lengthSquared()
             if (currd is None or d < currd) and d < 2500:
                 currd = d
@@ -99,43 +111,67 @@ class SchematicEditor(QWidget):
 
     def _closest_assist_point(self, point):
         gp = self._closest_guideline_point(point)
-
-        d1 = QVector2D(gp - point).lengthSquared()
+        return gp
 
     def mousePressEvent(self, e):
-        self.grabbed_element = self._pick(e.pos())
-        if self.grabbed_element is not None:
-            self.grab_offset = self.grabbed_element.bounding_box.topLeft() - e.pos()
+        if self.wiring_mode:
+            pass
+        else:
+            self.grabbed_element = self._pick(e.pos())
+            if self.grabbed_element is not None:
+                self.grab_offset = self.grabbed_element.bounding_box.topLeft() - e.pos()
 
     def mouseMoveEvent(self, e):
-        if self.grabbed_element is not None:
-            self.grabbed_element.bounding_box.moveTopLeft(
-                e.pos() + self.grab_offset)
-            self.moved = True
+        if self.wiring_mode:
+            self.closest_point = self._closest_assist_point(e.pos())
+            if self._wire_start is not None and self.closest_point is not None:
+                self._ghost_wire = QLine(self._wire_start, self.closest_point)
+            else:
+                self._ghost_wire = None
             self.update()
-
-        self.closest_point = self._closest_guideline_point(e.pos())
-        self.update()
+        else:
+            if self.grabbed_element is not None:
+                self.grabbed_element.bounding_box.moveTopLeft(
+                    e.pos() + self.grab_offset)
+                self.moved = True
+                self.update()
 
     def mouseReleaseEvent(self, e):
-        moved = self.moved
+        if self.wiring_mode:
+            if self.closest_point is not None:
+                if self._wire_start is None:
+                    self._wire_start = self.closest_point
+                elif self.closest_point != self._wire_start:
+                    wire_end = self.closest_point
+                    self.wires.append(QLine(self._wire_start, wire_end))
+                    self._wire_start = None
+                    self._build_guidelines()
+        else:
+            moved = self.moved
 
-        if self.grabbed_element is not None:
-            self.grabbed_element = None
-            self.moved = False
+            if self.grabbed_element is not None:
+                self.grabbed_element = None
+                self.moved = False
 
-        if not moved:
-            self.selected_elements = list()
-            for element in self.elements:
-                bb = element.bounding_box
-                if bb.contains(e.pos()):
-                    self.selected_elements.append(element)
-            self.update()
+            if not moved:
+                self.selected_elements = list()
+                for element in self.elements:
+                    bb = element.bounding_box
+                    if bb.contains(e.pos()):
+                        self.selected_elements.append(element)
+                self.update()
 
     def _build_guidelines(self):
         self.guidelines = list()
         for element in self.elements:
-            for p in element.guideline_points():
+            for pin in element.pins():
+                p = pin.position + element.bounding_box.topLeft()
+                self.guidelines.append(
+                    QLine(0, p.y(), self.rect().width(), p.y()))
+                self.guidelines.append(
+                    QLine(p.x(), 0, p.x(), self.rect().height()))
+        for wire in self.wires:
+            for p in (wire.p1(), wire.p2()):
                 self.guidelines.append(
                     QLine(0, p.y(), self.rect().width(), p.y()))
                 self.guidelines.append(
@@ -146,10 +182,24 @@ class SchematicEditor(QWidget):
         self._build_guidelines()
         self.update()
 
+    def _leave_wiring_mode(self):
+        self.wiring_mode = False
+
+    def _enter_wiring_mode(self):
+        self.wiring_mode = True
+        self._ghost_wire = None
+        self.closest_point = None
+        self.selected_elements = list()
+        self._build_guidelines()
+
     def keyReleaseEvent(self, e):
         if e.key() == Qt.Key_W:
-            self.wiring_assistant ^= True
-            self._build_guidelines()
+            if not self.wiring_mode:
+                self._enter_wiring_mode()
+                self.wiring_mode = True
+            else:
+                self._leave_wiring_mode()
+                self.wiring_mode = False
             self.update()
 
 
@@ -181,7 +231,9 @@ class NotElement(Element):
         self.bounding_box = QRect(QPoint(), self.SIZE)
 
     def pins(self):
-        pass
+        bb = self.bounding_box
+        yield Pin(self.descriptor.get_pin('in'), QVector2D(-1, 0), QPoint(0, bb.height() / 2))
+        yield Pin(self.descriptor.get_pin('out'), QVector2D(1, 0), QPoint(bb.width(), bb.height() / 2))
 
     def paint(self, painter):
         painter.setPen(QPen(Qt.black, 2))

@@ -40,6 +40,7 @@ if __name__ == "__main__":
     app = QApplication()
     w = QMainWindow()
     w.setMinimumSize(640, 480)
+    w.resize(1280, 720)
 
     elems = ElementTree()
     elems.create_from_dict(ELEMENTS)
@@ -52,13 +53,14 @@ if __name__ == "__main__":
     w.addDockWidget(Qt.LeftDockWidgetArea, dw)
 
     sim = Simulator()
-    g = Gate('or', 1, 2, False)
+    g = NotGate(1)
     g.name = 'gate'
     sim.root = g
     t = QTimer(w)
 
     ed = SchematicEditor()
     w.setCentralWidget(ed)
+    ed.elements.append(NotElement(g))
 
     edd = None
 
