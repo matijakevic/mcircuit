@@ -62,10 +62,8 @@ class SchematicEditor(QWidget):
         path = QPainterPath()
 
         for wire in self.wires:
-            temp = QPainterPath()
-            temp.moveTo(wire.p1())
-            temp.lineTo(wire.p2())
-            path |= temp
+            path.moveTo(wire.p1())
+            path.lineTo(wire.p2())
 
         p = QPen(Qt.black, 8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
 
