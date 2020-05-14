@@ -23,9 +23,7 @@ class SchematicEditor(QWidget):
         self.setFocusPolicy(Qt.StrongFocus)
 
         self.elements = list()
-        self.pins = list()
         self.wires = list()
-        self.junctions = list()
 
         self.guidepoints = list()
         self.guidelines = list()
@@ -60,6 +58,27 @@ class SchematicEditor(QWidget):
         painter.fillPath(stroke, fill_color)
         painter.drawPath(stroke)
 
+    def _draw_wires(self, painter):
+        path = QPainterPath()
+
+        for wire in self.wires:
+            temp = QPainterPath()
+            temp.moveTo(wire.p1())
+            temp.lineTo(wire.p2())
+            path |= temp
+
+        p = QPen(Qt.black, 8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+
+        stroker = QPainterPathStroker(p)
+        stroke = stroker.createStroke(path).simplified()
+
+        fill_color = QColor(255, 255, 255)
+        outline_color = QColor(0, 0, 0)
+
+        painter.setPen(QPen(outline_color, 2))
+        painter.fillPath(stroke, fill_color)
+        painter.drawPath(stroke)
+
     def _draw_pin(self, painter, point):
         fill_color = QColor(255, 255, 255)
         outline_color = QColor(0, 0, 0)
@@ -79,13 +98,12 @@ class SchematicEditor(QWidget):
             element.paint(painter)
             painter.translate(-element.bounding_box.topLeft())
 
+        self._draw_wires(painter)
+
         for element in self.elements:
             for pin in element.pins():
                 p = pin.position + element.bounding_box.topLeft()
                 self._draw_pin(painter, p)
-
-        for wire in self.wires:
-            self._draw_wire(painter, wire, False)
 
         painter.setPen(QPen(Qt.red, 1, Qt.DashLine))
         painter.setBrush(Qt.transparent)
@@ -107,10 +125,6 @@ class SchematicEditor(QWidget):
             if self._ghost_wire:
                 self._draw_wire(painter, self._ghost_wire, True)
 
-            painter.setPen(QPen(Qt.red, 1, Qt.PenStyle.SolidLine))
-            for p in self.guidepoints:
-                painter.drawEllipse(p.x() - 4, p.y() - 4, 8, 8)
-
             if self.closest_point is not None:
                 p = self.closest_point
                 painter.drawEllipse(p.x() - 4, p.y() - 4, 8, 8)
@@ -124,12 +138,32 @@ class SchematicEditor(QWidget):
     def _closest_guideline_point(self, point):
         currd = None
         closest = None
+        is_junction = False
+        for element in self.elements:
+            for pin in element.pins():
+                p = pin.position + element.bounding_box.topLeft()
+                d = QVector2D(p - point).lengthSquared()
+                if (currd is None or d < currd) and d < 2500:
+                    currd = d
+                    closest = p
+                    is_junction = True
+        for wire in self.wires:
+            for p in (wire.p1(), wire.p2()):
+                d = QVector2D(p - point).lengthSquared()
+                if (currd is None or d < currd) and d < 2500:
+                    currd = d
+                    closest = p
+                    is_junction = True
         for line in self.guidelines:
             p = _closest_point(line, point)
             d = QVector2D(p - point).lengthSquared()
             if not _is_point_on_line(line, p):
                 continue
-            if (currd is None or d < currd) and d < 2500:
+            if self._wire_start is not None:
+                delta = p - self._wire_start
+                if delta.x() != 0 and delta.y() != 0:
+                    continue
+            if (currd is None or ((not is_junction and d < currd) or (is_junction and abs(d - currd) > 100))) and d < 2500:
                 currd = d
                 closest = p
         return closest
@@ -173,7 +207,10 @@ class SchematicEditor(QWidget):
 
     def mouseReleaseEvent(self, e):
         if self.wiring_mode:
-            if self.closest_point is not None:
+            if e.button() == Qt.RightButton:
+                self._wire_start = None
+                self.update()
+            elif self.closest_point is not None:
                 if self._wire_start is None:
                     self._wire_start = self.closest_point
                 elif self.closest_point != self._wire_start:
@@ -181,6 +218,7 @@ class SchematicEditor(QWidget):
                     self.wires.append(QLine(self._wire_start, wire_end))
                     self._wire_start = None
                     self._build_guidelines()
+                    self.update()
         else:
             moved = self.moved
 
