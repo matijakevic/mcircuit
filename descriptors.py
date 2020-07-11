@@ -179,6 +179,11 @@ class Simulator:
         self._observers = defaultdict(list)
         self._pins = list()
 
+    def get_debug_info(self):
+        if self._module is None:
+            return ''
+        return str(self._module)
+
     def _run_observers(self):
         for name in self._pins:
             state = self.get_pin_value(name)
