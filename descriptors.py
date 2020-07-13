@@ -179,6 +179,9 @@ class Simulator:
         self._observers = defaultdict(list)
         self._pins = list()
 
+    def is_ready(self):
+        return isinstance(self.root, Descriptor)
+
     def get_debug_info(self):
         if self._module is None:
             return ''
@@ -209,7 +212,7 @@ class Simulator:
         self.ready = False
 
     def init(self):
-        if not isinstance(self.root, Descriptor):
+        if not self.is_ready():
             raise TypeError('cannot initialize, root descriptor not set')
 
         self._module = m = ll.Module()
@@ -270,8 +273,9 @@ class Simulator:
         self.ready = True
 
     def step(self):
-        self._step_fn()
-        self._run_observers()
+        if self._step_fn is not None:
+            self._step_fn()
+            self._run_observers()
 
     def burst(self):
         self._burst_fn()

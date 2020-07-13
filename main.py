@@ -6,68 +6,135 @@ from version import format_version
 from descriptors import *
 from elements import *
 from time import perf_counter
+from serial import save, load
 
 
-def make_title():
-    return f'mcircuit {format_version()}'
-
-
-ELEMENTS = {
-
-}
-
-
-class ElementTree(QTreeWidget):
+class MCircuit(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setHeaderHidden(True)
-        self.setColumnCount(1)
+        self.setMinimumSize(640, 480)
+        self.setWindowTitle(self._make_title())
 
-    def create_from_dict(self, d):
-        for category in d:
-            category_item = QTreeWidgetItem()
-            category_item.setText(0, category)
+        self._simulator = Simulator()
+        ng = NotGate(1)
+        ng.name = 'gate'
+        el = NotElement(ng)
+        self._simulator.set_root(ng)
 
-            for elem_name in d[category]:
-                it = QTreeWidgetItem()
-                it.setText(0, elem_name)
-                category_item.addChild(it)
+        self._desired_frequency = 1
+        self._ticks = 0
 
-            self.addTopLevelItem(category_item)
+        self._debug_editor = None
+        self._debug_dock = None
+
+        self._schematic_editor = SchematicEditor()
+        self._schematic_editor.elements.append(el)
+        self.setCentralWidget(self._schematic_editor)
+
+        self._simulation_timer = QTimer()
+        self._benchmark_timer = QTimer()
+
+        self._simulate_action = QAction('Simulate')
+        self._simulate_action.toggled.connect(self._on_simulate_action)
+        self._simulate_action.setCheckable(True)
+
+        self._benchmark_label = QLabel()
+
+        self._setup_file_menu()
+        self._setup_debug_view()
+        self._setup_view_menu()
+        self._setup_toolbar()
+
+        self._simulation_timer.timeout.connect(self._on_simulation_tick)
+        self._benchmark_timer.timeout.connect(self._on_benchmark_tick)
+
+    def _setup_toolbar(self):
+        toolbar = QToolBar()
+
+        toolbar.addAction(self._simulate_action)
+        toolbar.addSeparator()
+        toolbar.addWidget(self._benchmark_label)
+
+        self.addToolBar(toolbar)
+
+    def _make_title(self):
+        return f'mcircuit {format_version()}'
+
+    def _on_simulation_tick(self):
+        freq = self._desired_frequency
+        if freq < 60:
+            self._simulator.step()
+            self._ticks += 1
+        else:
+            n = freq // BURST_SIZE
+            for _ in range(n):
+                self._simulator.burst()
+            rem = freq % BURST_SIZE
+            for _ in range(rem):
+                self._simulator.step()
+            self._ticks += n * BURST_SIZE + rem
+        self._schematic_editor.update()
+
+    def _on_benchmark_tick(self):
+        self._benchmark_label.setText(f'Frequency: {self._ticks} Hz')
+        self._ticks = 0
+
+    def _setup_debug_view(self):
+        editor = QTextEdit()
+        editor.setReadOnly(True)
+        self._debug_editor = editor
+
+        dock = QDockWidget()
+        dock.setWidget(editor)
+        dock.setWindowTitle('Debug')
+        dock.setVisible(False)
+        self._debug_dock = dock
+
+        self.addDockWidget(Qt.RightDockWidgetArea, dock)
+
+    def _setup_view_menu(self):
+        menu = QMenu('View')
+
+        menu.addAction(self._debug_dock.toggleViewAction())
+
+        self.menuBar().addMenu(menu)
+
+    def _setup_file_menu(self):
+        menu = QMenu('File')
+        menu.addAction('Open')
+        menu.addSeparator()
+        menu.addAction('Save')
+        menu.addAction('Save as...')
+        menu.addSeparator()
+        menu.addAction('Exit', self.close)
+
+        self.menuBar().addMenu(menu)
+
+    def _on_simulate_action(self):
+        simulating = self._simulate_action.isChecked()
+        simulator = self._simulator
+        if simulating:
+            simulator.init()
+            self._debug_editor.setText(
+                '<pre>{}</pre>'.format(simulator.get_debug_info()))
+            if self._desired_frequency < 60:
+                self._simulation_timer.start(1000 // self._desired_frequency)
+            else:
+                self._simulation_timer.start(1000 / 60)
+            self._benchmark_timer.start(1000)
+        else:
+            self._benchmark_label.clear()
+            simulator.cleanup()
+            self._simulation_timer.stop()
+            self._benchmark_timer.stop()
 
 
 if __name__ == "__main__":
     app = QApplication()
-    w = QMainWindow()
-    w.setMinimumSize(640, 480)
-    w.resize(1280, 720)
+    instance = MCircuit()
 
-    debug = QTextEdit()
-    debug.setReadOnly(True)
-    debug_dw = QDockWidget()
-    debug_dw.setWidget(debug)
-    debug_dw.setWindowTitle('Debug')
-    debug_dw.setVisible(False)
-    w.addDockWidget(Qt.RightDockWidgetArea, debug_dw)
-
-    menu = w.menuBar()
-
-    file_menu = QMenu('File')
-    file_menu.addAction('Open')
-    file_menu.addSeparator()
-    file_menu.addAction('Save')
-    file_menu.addAction('Save as...')
-    file_menu.addSeparator()
-    file_menu.addAction('Exit')
-
-    menu.addMenu(file_menu)
-
-    view_menu = QMenu('View')
-    view_menu.addAction(debug_dw.toggleViewAction())
-    menu.addMenu(view_menu)
-
-    elems = ElementTree()
+    """ elems = ElementTree()
     elems.create_from_dict(ELEMENTS)
     elems.expandAll()
     dw = QDockWidget()
@@ -75,94 +142,16 @@ if __name__ == "__main__":
     dw.setWindowTitle('Elements')
     dw.setFeatures(QDockWidget.DockWidgetMovable |
                    QDockWidget.DockWidgetFloatable)
-    w.addDockWidget(Qt.LeftDockWidgetArea, dw)
+    w.addDockWidget(Qt.LeftDockWidgetArea, dw) """
 
-    sim = Simulator()
+    """ sim = Simulator()
     g = NotGate(1)
     g.name = 'gate'
     sim.root = g
     t = QTimer(w)
 
-    ed = SchematicEditor()
-    w.setCentralWidget(ed)
-    for i in range(10):
-        ed.elements.append(NotElement(g))
+    ed =
+    ed.elements.append(NotElement(g)) """
 
-    edd = None
-
-    ticks = 0
-    desired_freq = 1
-
-    def _on_timer():
-        global ticks
-        if desired_freq < 60:
-            sim.step()
-            ticks += 1
-        else:
-            n = desired_freq // BURST_SIZE
-            for _ in range(n):
-                sim.burst()
-            rem = desired_freq % BURST_SIZE
-            for _ in range(rem):
-                sim.step()
-            ticks += n * BURST_SIZE + rem
-        ed.update()
-
-    t.timeout.connect(_on_timer)
-
-    action = QAction('Simulate')
-    action.setCheckable(True)
-
-    spb = QSpinBox()
-    spb.setValue(1)
-    spb.setMinimum(1)
-    spb.setMaximum(1000000000)
-
-    def on_change_val(val):
-        global desired_freq
-        desired_freq = val
-        if desired_freq < 60:
-            t.start(1000 // desired_freq)
-        else:
-            t.start(1000 / 60)
-    spb.valueChanged.connect(on_change_val)
-
-    def _handle_sim_action():
-        simulating = action.isChecked()
-        if simulating:
-            sim.init()
-            debug.setText('<pre>{}</pre>'.format(sim.get_debug_info()))
-            if desired_freq < 60:
-                t.start(1000 // desired_freq)
-            else:
-                t.start(1000 / 60)
-            benc_timer.start(1000)
-        else:
-            lbl.setText('')
-            sim.cleanup()
-            t.stop()
-            benc_timer.stop()
-
-    action.changed.connect(_handle_sim_action)
-    toolbar = QToolBar()
-
-    lbl = QLabel()
-
-    benc_timer = QTimer(w)
-
-    def _on_bench():
-        global ticks
-        lbl.setText(f'Frequency: {ticks} Hz')
-        ticks = 0
-
-    benc_timer.timeout.connect(_on_bench)
-
-    toolbar.addAction(action)
-    toolbar.addWidget(spb)
-    lbl.setAlignment(Qt.AlignRight)
-    toolbar.addWidget(lbl)
-    w.addToolBar(toolbar)
-
-    w.setWindowTitle(make_title())
-    w.show()
+    instance.show()
     app.exec_()
