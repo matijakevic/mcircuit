@@ -6,6 +6,7 @@ from PySide2.QtWidgets import QApplication, QMainWindow, QWidget, QAction, QTool
 from version import format_version
 from descriptors import *
 from elements import *
+from schematic import SchematicEditor
 from simulator import Simulator, BURST_SIZE
 from time import perf_counter
 from serial import save, load
@@ -21,7 +22,11 @@ class MCircuit(QMainWindow):
         self._simulator = Simulator()
         ng = NotGate(1)
         ng.name = 'gate'
-        self._simulator.set_root(ng)
+        c = Composite()
+        c.add_child(ng)
+        c.name = 'root'
+        c.connect('gate', 'out', 'gate', 'in')
+        self._simulator.set_root(c)
 
         self._ticks = 0
 
@@ -147,14 +152,25 @@ class MCircuit(QMainWindow):
         main_layout.addWidget(group_visual)
         main_layout.addWidget(group_rendering)
 
+        def generic_setter(obj, prop):
+            def f(value):
+                setattr(obj, prop, value)
+            return f
+
         visual_layout = QHBoxLayout()
         group_visual.setLayout(visual_layout)
         show_grid_checkbox = QCheckBox('Show grid')
+        show_grid_checkbox.setChecked(self._schematic_editor.grid_shown)
+        show_grid_checkbox.stateChanged.connect(
+            generic_setter(self._schematic_editor, 'grid_shown'))
         visual_layout.addWidget(show_grid_checkbox)
 
         rendering_layout = QHBoxLayout()
         group_rendering.setLayout(rendering_layout)
         antialias_checkbox = QCheckBox('Antialiasing')
+        antialias_checkbox.setChecked(self._schematic_editor.antialiased)
+        antialias_checkbox.stateChanged.connect(
+            generic_setter(self._schematic_editor, 'antialiased'))
         rendering_layout.addWidget(antialias_checkbox)
 
         dialog.show()
@@ -178,6 +194,8 @@ class MCircuit(QMainWindow):
             self._simulation_timer.stop()
             self._benchmark_timer.stop()
             self._ticks = 0
+        # TODO: We can allow changing frequencies at runtime, but not needed for now.
+        self._desired_frequency_spinbox.setEnabled(not simulating)
 
 
 if __name__ == "__main__":
