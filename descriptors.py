@@ -121,6 +121,9 @@ class Composite(Descriptor):
         self._conns[desc1][pin1].add((desc2, pin2))
         self._deps[desc1].add(desc2)
 
+    def disconnect_all(self):
+        self._conns.clear()
+
     def setup(self, module: ll.Module):
         for cdesc in self.children.values():
             cdesc.setup(module)

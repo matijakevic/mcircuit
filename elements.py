@@ -9,7 +9,7 @@ EAST, SOUTH, WEST, NORTH = range(4)
 
 
 class Element:
-    def __init__(self, desc: Descriptor = None):
+    def __init__(self, desc):
         self.simulator = None
         self.desc = desc
         self.pos = QPointF()

@@ -6,7 +6,7 @@ from PySide2.QtWidgets import QApplication, QMainWindow, QWidget, QAction, QTool
 from version import format_version
 from descriptors import *
 from elements import *
-from schematic import SchematicEditor
+from schematic import Schematic, SchematicEditor
 from simulator import Simulator, BURST_SIZE
 from time import perf_counter
 from serial import save, load
@@ -38,8 +38,10 @@ class MCircuit(QMainWindow):
         self._desired_frequency_spinbox = None
 
         self._schematic_editor = SchematicEditor(self._simulator)
+        self._schematic = Schematic(c)
         el = NotElement(ng)
-        self._schematic_editor.add_element(el)
+        self._schematic.add_element(el)
+        self._schematic_editor.schematic = self._schematic
         self.setCentralWidget(self._schematic_editor)
 
         self._simulation_timer = QTimer()
@@ -77,7 +79,6 @@ class MCircuit(QMainWindow):
         for _ in range(rem):
             self._simulator.step()
         self._ticks += n * BURST_SIZE + rem
-        self._schematic_editor.update()
 
     def _on_benchmark_tick(self):
         self._benchmark_label.setText(f'{self._ticks} Hz')

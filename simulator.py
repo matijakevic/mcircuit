@@ -44,6 +44,11 @@ class Simulator:
     def observe(self, path, func):
         self._observers[path].append(func)
 
+    def unobserve(self, path, func):
+        self._observers[path].remove(func)
+        if not self._observers[path]:
+            del self._observers[path]
+
     def set_root(self, descriptor):
         self.root = descriptor
         descriptor.simulator = self
