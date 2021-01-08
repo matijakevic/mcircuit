@@ -12,10 +12,14 @@ Thanks to Logisim for inspiration.
 ## Dependencies
 - Python 3
 - PySide 2
-- llvmlite
-- sortedcontainers
+- llvmlite (optional)
 
+I recommend using Python 3.8 for now, because llvmlite
+wheels for 3.9 aren't available yet.
+
+If llvmlite cannot be imported, the simulator will
+use the custom interpreter (which is very slow).
 
 ## Running
-1. install dependencies: `pip install -r requirements.txt`
+1. install dependencies: `pip install pyside2 llvmlite`
 2. run: `python main.py`

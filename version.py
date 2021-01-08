@@ -1,6 +1,5 @@
-MINOR = 1
-MAJOR = 0
+VERSION = 1
 
 
 def format_version():
-    return f'v{MAJOR}.{MINOR}'
+    return f'v{VERSION}'
