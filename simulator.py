@@ -208,7 +208,7 @@ class JIT(Executor):
         pmb.populate(pm)
         pm.run(llmod)
 
-        print(llmod)
+        # print(llmod)
 
         self._machine = llvm.Target.from_default_triple().create_target_machine()
 

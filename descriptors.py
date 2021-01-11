@@ -59,24 +59,38 @@ class Schematic(Descriptor):
     def get_child(self, name):
         return self.children[name]
 
+    def all_inputs(self):
+        for name, child in self.children.items():
+            if not isinstance(child, ExposedPin):
+                continue
+            if child.direction == ExposedPin.IN:
+                yield name + '.pin'
+
+    def all_outputs(self):
+        for name, child in self.children.items():
+            if not isinstance(child, ExposedPin):
+                continue
+            if child.direction == ExposedPin.OUT:
+                yield name + '.pin'
+
     # Returns a Schematic equivalent which doesn't contain
     # any other Schematic descriptors in its children.
 
     def flatten(self):
         s = Schematic()
 
-        l = [('', self)]
+        to_expand = [('', self)]
 
         def make_path(path, name):
             return (path + '.' + name).lstrip('.')
 
-        while l:
-            path, desc = l.pop()
+        while to_expand:
+            path, desc = to_expand.pop()
 
             for name, child_desc in desc.children.items():
                 child_path = make_path(path, name)
                 if isinstance(child_desc, Schematic):
-                    l.append((child_path, child_desc))
+                    to_expand.append((child_path, child_desc))
                 else:
                     s.add_child(child_path, child_desc)
 
@@ -87,15 +101,16 @@ class Schematic(Descriptor):
         return s
 
     def is_flattened(self):
-        return all(map(lambda desc: not isinstance(desc, Schematic), self.children.values()))
+        return all(map(lambda desc: not isinstance(desc, Schematic),
+                       self.children.values()))
 
 
 def topology(root):
     if not isinstance(root, Schematic):
         raise ValueError('root must be a flattened Schematic descriptor')
     if not root.is_flattened():
-        raise ValueError(
-            'cannot create a topology for a non-flattened Schematic descriptor')
+        raise ValueError('''cannot create a topology for a non-flattened
+Schematic descriptor''')
 
     visited = set()
     topo = list()
