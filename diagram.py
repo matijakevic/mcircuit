@@ -156,29 +156,32 @@ class Diagram:
         self.elements.append(element)
         self._reconstruct()
 
-    def construct_wire(self, x1, y1, x2, y2):
-        dx = x2 - x1
-        dy = y2 - y1
-
+    def construct_wires(self, to_place):
         wires = deepcopy(self.wires)
 
-        if dx == 0 and dy == 0:
-            return None
+        for x1, y1, x2, y2 in to_place:
+            dx = x2 - x1
+            dy = y2 - y1
 
-        if dx == 0:
-            for y in range(min(y1, y2), max(y1, y2)):
-                wires[(x1, y)].connections[SOUTH] ^= True
-                wires[(x1, y + 1)].connections[NORTH] ^= True
-            return wires
+            if dx == 0 and dy == 0:
+                continue
 
-        if dy == 0:
-            for x in range(min(x1, x2), max(x1, x2)):
-                wires[(x, y1)].connections[EAST] ^= True
-                wires[(x + 1, y1)].connections[WEST] ^= True
-            return wires
+            if dx == 0:
+                for y in range(min(y1, y2), max(y1, y2)):
+                    wires[(x1, y)].connections[SOUTH] ^= True
+                    wires[(x1, y + 1)].connections[NORTH] ^= True
+                continue
 
-        raise ValueError('wire must be either horizontal or vertical')
+            if dy == 0:
+                for x in range(min(x1, x2), max(x1, x2)):
+                    wires[(x, y1)].connections[EAST] ^= True
+                    wires[(x + 1, y1)].connections[WEST] ^= True
+                continue
 
-    def change_wire(self, x1, y1, x2, y2):
-        self.wires = self.construct_wire(x1, y1, x2, y2)
+            raise ValueError('wire must be either horizontal or vertical')
+
+        return wires
+
+    def change_wires(self, to_place):
+        self.wires = self.construct_wires(to_place)
         self._reconstruct()

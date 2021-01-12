@@ -1,6 +1,7 @@
 from collections import defaultdict
 from itertools import chain
-from PySide2.QtCore import QLine, QMargins, QPoint, QRect, QStateMachine, QTime, QTimer, Qt, Signal
+import math
+from PySide2.QtCore import QLine, QLineF, QMargins, QPoint, QRect, QStateMachine, QTime, QTimer, Qt, Signal
 from PySide2.QtGui import QColor, QKeySequence, QMouseEvent, QPainter, QPen, QStandardItem, QStandardItemModel, QTransform
 from diagram import Diagram, EAST, Element, NORTH, SOUTH, WEST, rotate
 from descriptors import ExposedPin, Gate, Not
@@ -152,6 +153,8 @@ class DiagramEditor(QWidget):
         self._mode = DiagramEditor.EDIT
         self._state = DiagramEditor.NONE
 
+        self._cursor_pos = QPoint()
+
         self._selected_element = None
         self._placing_element = None
         self._start = None
@@ -199,10 +202,13 @@ class DiagramEditor(QWidget):
         delta = we - ws
         if delta == QPoint():
             return None
+
         if abs(delta.x()) > abs(delta.y()):
-            return QLine(ws.x(), ws.y(), we.x(), ws.y())
+            yield (ws.x(), ws.y(), we.x(), ws.y())
+            yield (we.x(), ws.y(), we.x(), we.y())
         else:
-            return QLine(ws.x(), ws.y(), ws.x(), we.y())
+            yield (ws.x(), ws.y(), ws.x(), we.y())
+            yield (ws.x(), we.y(), we.x(), we.y())
 
     def start_placing(self, element):
         self._state = DiagramEditor.PLACE
@@ -271,6 +277,8 @@ class DiagramEditor(QWidget):
     def mouseMoveEvent(self, event: QMouseEvent):
         d = event.pos() - self._translation
         p = d / self.grid_size
+        self._cursor_pos = (event.pos() / self.grid_size) * self.grid_size
+        self.update()
 
         if self._mode == DiagramEditor.VIEW:
             if self._state == DiagramEditor.CLICK:
@@ -328,10 +336,9 @@ class DiagramEditor(QWidget):
             self._state = DiagramEditor.NONE
             self.update()
         elif self._state == DiagramEditor.WIRE:
-            wire = self._get_wire()
-            if wire is not None:
-                self.diagram.change_wire(
-                    wire.x1(), wire.y1(), wire.x2(), wire.y2())
+            wires = self._get_wire()
+            if wires is not None:
+                self.diagram.change_wires(wires)
             self._state = DiagramEditor.NONE
             self.update()
         elif self._state == DiagramEditor.ELEMENT_CLICK:
@@ -360,6 +367,11 @@ class DiagramEditor(QWidget):
             painter.drawLine(x - tx, -ty, x - tx, self.height()-ty)
         for y in range(0, self.height(), self.grid_size):
             painter.drawLine(-tx, y-ty, self.width()-tx, y-ty)
+
+        if self._state not in (DiagramEditor.DRAG, DiagramEditor.PLACE):
+            painter.setPen(QPen(Qt.black, 2.0))
+            painter.drawArc(self._cursor_pos.x() - tx - 6,
+                            self._cursor_pos.y() - ty - 6, 12, 12, 0, 360 * 16)
 
         gs = self.grid_size
 
@@ -432,10 +444,9 @@ class DiagramEditor(QWidget):
         wires = list()
 
         if self._state == DiagramEditor.WIRE:
-            curr_wire = self._get_wire()
-            if curr_wire:
-                wiremap = self.diagram.construct_wire(
-                    curr_wire.x1(), curr_wire.y1(), curr_wire.x2(), curr_wire.y2())
+            curr_wires = self._get_wire()
+            if curr_wires is not None:
+                wiremap = self.diagram.construct_wires(curr_wires)
             else:
                 wiremap = self.diagram.wires
         else:
@@ -601,12 +612,6 @@ class MainWindow(QMainWindow):
         it = QListWidgetItem(d.name)
         it.setData(Qt.ItemDataRole.UserRole, d)
         diagram_tree.addItem(it)
-        d.add_element(Element('gate', desc1, (5, 5)))
-        d.add_element(Element('not', desc2, (20, 5)))
-        d.add_element(Element('in', desc3, (10, 5)))
-        d.add_element(Element('out', desc4, (30, 5)))
-        d.change_wire(10, 5, 16, 5)
-        d.change_wire(20, 5, 30, 5)
         diag = DiagramEditor(d)
 
         def on_element_selected(element):
