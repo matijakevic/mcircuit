@@ -1,14 +1,16 @@
 from collections import defaultdict
 from itertools import chain
 import math
+from simulator import JIT
+from typing import Text
 from PySide2.QtCore import QLine, QLineF, QMargins, QPoint, QRect, QStateMachine, QTime, QTimer, Qt, Signal
-from PySide2.QtGui import QColor, QKeySequence, QMouseEvent, QPainter, QPen, QStandardItem, QStandardItemModel, QTransform
+from PySide2.QtGui import QColor, QKeySequence, QMouseEvent, QPainter, QPalette, QPen, QStandardItem, QStandardItemModel, QTransform, QVector2D
 from diagram import Diagram, EAST, Element, NORTH, SOUTH, WEST, rotate
 from descriptors import ExposedPin, Gate, Not
 
 from version import format_version
 
-from PySide2.QtWidgets import QAction, QCheckBox, QComboBox, QDockWidget, QFormLayout, QLineEdit, QListView, QListWidget, QListWidgetItem, QMainWindow, QApplication, QMenu, QMenuBar, QPushButton, QShortcut, QSpinBox, QToolBar, QTreeView, QTreeWidget, QTreeWidgetItem, QWidget
+from PySide2.QtWidgets import QAction, QCheckBox, QComboBox, QCommonStyle, QDockWidget, QFormLayout, QLineEdit, QListView, QListWidget, QListWidgetItem, QMainWindow, QApplication, QMenu, QMenuBar, QPushButton, QShortcut, QSpinBox, QStyle, QStyleFactory, QToolBar, QTreeView, QTreeWidget, QTreeWidgetItem, QWidget
 
 
 def make_line_edit(desc, attribute, callback=None):
@@ -226,8 +228,15 @@ class DiagramEditor(QWidget):
             transform.translate(x * gs, y * gs)
             transform.rotate(facing * -90)
 
-            r = QRect(xb * gs,  yb * gs, w * gs, h * gs)
+            r = QRect(xb * gs, yb * gs, w * gs, h * gs)
             r = transform.mapRect(r)
+
+            for p, _ in chain(element.all_inputs(),
+                              element.all_outputs()):
+                rx, ry = rotate(x, y, facing)
+                pt = QPoint(p[0] + rx, p[1] + ry) * gs
+                if QVector2D(pt - pos).length() <= self.grid_size / 2:
+                    return None
 
             if r.contains(pos):
                 return element
@@ -237,7 +246,7 @@ class DiagramEditor(QWidget):
     def mousePressEvent(self, event: QMouseEvent):
         gs = self.grid_size
         d = event.pos() - self._translation
-        p = d / gs
+        p = QPoint(round(d.x() / gs), round(d.y() / gs))
 
         if self._mode == DiagramEditor.VIEW:
             self._state = DiagramEditor.CLICK
@@ -261,22 +270,24 @@ class DiagramEditor(QWidget):
             selected_element = self.element_at_pos(d)
             if selected_element is None:
                 self._state = DiagramEditor.EMPTY_CLICK
-                self._start = p
-                self._end = p
                 self.element_selected.emit(selected_element)
                 self.update()
             else:
                 if self._selected_element is not selected_element:
                     self.element_selected.emit(selected_element)
-                self._selected_element = selected_element
+                    self._selected_element = selected_element
                 self._state = DiagramEditor.ELEMENT_CLICK
+                self.update()
+            self._start = p
+            self._end = p
         elif self._state != DiagramEditor.PLACE:
             self._state = DiagramEditor.NONE
             self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent):
         d = event.pos() - self._translation
-        p = d / self.grid_size
+        gs = self.grid_size
+        p = QPoint(round(d.x() / gs), round(d.y() / gs))
         self._cursor_pos = (event.pos() / self.grid_size) * self.grid_size
         self.update()
 
@@ -327,6 +338,7 @@ class DiagramEditor(QWidget):
             self._state = DiagramEditor.SELECT
             self.diagram.add_element(self._placing_element)
             self._selected_element = self._placing_element
+            self.element_selected.emit(self._selected_element)
             self.update()
         elif self._state == DiagramEditor.DRAG:
             el = self._selected_element
@@ -352,7 +364,14 @@ class DiagramEditor(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.HighQualityAntialiasing)
 
-        painter.fillRect(self.rect(), Qt.white)
+        back_col = QApplication.palette().color(QPalette.Base)
+        tex_col = QApplication.palette().color(QPalette.WindowText)
+        wid_col = back_col
+        grid_col = tex_col
+        wire_col = tex_col
+        cur_col = tex_col
+
+        painter.fillRect(self.rect(), wid_col)
 
         if self._mode == DiagramEditor.VIEW and self._state == DiagramEditor.MOVE:
             trans = self._translation + self._end - self._start
@@ -360,18 +379,12 @@ class DiagramEditor(QWidget):
             trans = self._translation
 
         painter.translate(trans)
-        painter.setPen(QPen(Qt.black, 0.1))
+        painter.setPen(QPen(grid_col, 1))
         ttrans = trans / self.grid_size
         tx, ty = ttrans.x() * self.grid_size, ttrans.y() * self.grid_size
         for x in range(0, self.width(), self.grid_size):
-            painter.drawLine(x - tx, -ty, x - tx, self.height()-ty)
-        for y in range(0, self.height(), self.grid_size):
-            painter.drawLine(-tx, y-ty, self.width()-tx, y-ty)
-
-        if self._state not in (DiagramEditor.DRAG, DiagramEditor.PLACE):
-            painter.setPen(QPen(Qt.black, 2.0))
-            painter.drawArc(self._cursor_pos.x() - tx - 6,
-                            self._cursor_pos.y() - ty - 6, 12, 12, 0, 360 * 16)
+            for y in range(0, self.height(), self.grid_size):
+                painter.drawPoint(x - tx, y-ty)
 
         gs = self.grid_size
 
@@ -397,13 +410,20 @@ class DiagramEditor(QWidget):
                 painter.setPen(QPen(Qt.red, 1.0))
                 painter.drawRect(r)
 
-            pins = list()
-            for pos, _ in chain(element.all_inputs(),
-                                element.all_outputs()):
-                pins.append(QPoint(pos[0], pos[1]) * gs)
-
-            painter.setPen(QPen(Qt.black, 6.0))
-            painter.drawPoints(pins)
+            for pos, name in chain(element.all_inputs(),
+                                   element.all_outputs()):
+                state = -1
+                if self.executor is not None:
+                    state = self.executor.get_pin_state(
+                        element.name + '.' + name)
+                if state == -1:
+                    painter.setPen(QPen(Qt.blue, 6.0))
+                elif state == 0:
+                    painter.setPen(QPen(Qt.black, 6.0))
+                else:
+                    painter.setPen(QPen(Qt.green, 6.0))
+                p = QPoint(pos[0], pos[1]) * gs
+                painter.drawPoint(p)
 
             painter.restore()
 
@@ -459,8 +479,13 @@ class DiagramEditor(QWidget):
                     p2 = QPoint(*rotate(1, 0, dir)) * gs + p1
                     wires.append(QLine(p1, p2))
 
-        painter.setPen(QPen(Qt.black, 4.0))
+        painter.setPen(QPen(wire_col, 2.0))
         painter.drawLines(wires)
+
+        if self._state not in (DiagramEditor.DRAG, DiagramEditor.PLACE):
+            painter.setPen(QPen(cur_col, 2.0))
+            painter.drawArc(self._cursor_pos.x() - tx - 6,
+                            self._cursor_pos.y() - ty - 6, 12, 12, 0, 360 * 16)
 
 
 def element_factory(cls, name, *args, **kwargs):
@@ -599,7 +624,17 @@ class MainWindow(QMainWindow):
         menu_bar.addMenu(view_menu)
 
         def toggle_simulation():
-            s = d.schematic
+            executing = diag.executor is not None
+            if executing:
+                simulate_btn.setText('Start')
+                diag.executor = None
+            else:
+                simulate_btn.setText('Stop')
+                s = d.schematic
+                exe = JIT(s)
+                diag.executor = exe
+                exe.step()
+            diag.update()
 
         simulate_btn.clicked.connect(toggle_simulation)
 
@@ -629,7 +664,25 @@ class MainWindow(QMainWindow):
 
 
 def run_app():
-    app = QApplication()
+    from sys import argv
+
+    app = QApplication(argv)
+    app.setStyle(QStyleFactory.create('fusion'))
+    # palette = app.palette()
+    # palette.setColor(QPalette.Window, QColor(53, 53, 53))
+    # palette.setColor(QPalette.WindowText, Qt.white)
+    # palette.setColor(QPalette.Base, QColor(15, 15, 15))
+    # palette.setColor(QPalette.AlternateBase, QColor(53, 53, 53))
+    # palette.setColor(QPalette.ToolTipBase, Qt.white)
+    # palette.setColor(QPalette.ToolTipText, Qt.white)
+    # palette.setColor(QPalette.Text, Qt.white)
+    # palette.setColor(QPalette.Button, QColor(53, 53, 53))
+    # palette.setColor(QPalette.ButtonText, Qt.white)
+    # palette.setColor(QPalette.BrightText, Qt.red)
+    # palette.setColor(QPalette.Highlight, QColor(44, 117, 255))
+    # palette.setColor(QPalette.HighlightedText, Qt.black)
+    # app.setPalette(palette)
+    # QApplication.setPalette(palette)
     window = MainWindow()
     window.showMaximized()
     return app.exec_()
