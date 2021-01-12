@@ -1,6 +1,6 @@
 from collections import defaultdict
 from itertools import chain
-from PySide2.QtCore import QLine, QMargins, QPoint, QRect, QTime, QTimer, Qt, Signal
+from PySide2.QtCore import QLine, QMargins, QPoint, QRect, QStateMachine, QTime, QTimer, Qt, Signal
 from PySide2.QtGui import QColor, QKeySequence, QMouseEvent, QPainter, QPen, QStandardItem, QStandardItemModel, QTransform
 from diagram import Diagram, EAST, Element, NORTH, SOUTH, WEST, rotate
 from descriptors import ExposedPin, Gate, Not
@@ -135,6 +135,10 @@ class ElementEditor(QWidget):
 
 
 class DiagramEditor(QWidget):
+    EDIT, VIEW = range(2)
+    NONE, ELEMENT_CLICK, EMPTY_CLICK, WIRE, DRAG, SELECT, PLACE, CLICK, MOVE = range(
+        9)
+
     element_selected = Signal(Element)
 
     def __init__(self, diagram, grid_size=16):
@@ -143,28 +147,69 @@ class DiagramEditor(QWidget):
         self.grid_size = grid_size
         self.executor = None
 
-        self.placing_element = None
-        self._drag_start = None
-        self._drag_end = None
-        self._selected_element = None
-        self._wire_start = None
-        self._wire_end = None
+        self._translation = QPoint()
 
+        self._mode = DiagramEditor.EDIT
+        self._state = DiagramEditor.NONE
+
+        self._selected_element = None
+        self._placing_element = None
+        self._start = None
+        self._end = None
+
+        mode_action = QShortcut(QKeySequence(Qt.Key_E), self)
         delete_action = QShortcut(QKeySequence(Qt.Key_Delete), self)
+        cancel_action = QShortcut(QKeySequence(Qt.Key_Escape), self)
 
         def delete_element():
-            if self._selected_element is not None:
+            if self._state == DiagramEditor.SELECT:
                 self.diagram.remove_element(self._selected_element)
-                self._selected_element = None
+                self._state = DiagramEditor.NONE
                 self.update()
+
         delete_action.activated.connect(delete_element)
+
+        def cancel():
+            self._state = DiagramEditor.NONE
+            if self._mode == DiagramEditor.VIEW:
+                self.setCursor(Qt.PointingHandCursor)
+            else:
+                self.setCursor(Qt.ArrowCursor)
+            self.update()
+
+        cancel_action.activated.connect(cancel)
+
+        def switch_mode():
+            self._mode = DiagramEditor.EDIT if self._mode == DiagramEditor.VIEW else DiagramEditor.VIEW
+            self._state = DiagramEditor.NONE
+            if self._mode == DiagramEditor.VIEW:
+                self.setCursor(Qt.PointingHandCursor)
+            else:
+                self.setCursor(Qt.ArrowCursor)
+            self.update()
+
+        mode_action.activated.connect(switch_mode)
 
         self.setMouseTracking(True)
 
-    def mousePressEvent(self, event: QMouseEvent):
-        gs = self.grid_size
+    def _get_wire(self):
+        if self._state != DiagramEditor.WIRE:
+            return None
+        ws, we = self._start, self._end
+        delta = we - ws
+        if delta == QPoint():
+            return None
+        if abs(delta.x()) > abs(delta.y()):
+            return QLine(ws.x(), ws.y(), we.x(), ws.y())
+        else:
+            return QLine(ws.x(), ws.y(), ws.x(), we.y())
 
-        selected_element = None
+    def start_placing(self, element):
+        self._state = DiagramEditor.PLACE
+        self._placing_element = element
+
+    def element_at_pos(self, pos):
+        gs = self.grid_size
 
         for element in self.diagram.elements:
             facing = element.facing
@@ -178,68 +223,123 @@ class DiagramEditor(QWidget):
             r = QRect(xb * gs,  yb * gs, w * gs, h * gs)
             r = transform.mapRect(r)
 
-            if r.contains(event.pos()):
-                selected_element = element
-                break
+            if r.contains(pos):
+                return element
 
-        if selected_element != self._selected_element:
-            self.element_selected.emit(selected_element)
-            self._selected_element = selected_element
+        return None
+
+    def mousePressEvent(self, event: QMouseEvent):
+        gs = self.grid_size
+        d = event.pos() - self._translation
+        p = d / gs
+
+        if self._mode == DiagramEditor.VIEW:
+            self._state = DiagramEditor.CLICK
+            self._start = d
+            self._end = d
             self.update()
+            return
 
-        if selected_element is None:
-            self._wire_start = event.pos() / self.grid_size
-            self._wire_end = self._wire_start
-        else:
-            self._drag_start = event.pos() / self.grid_size
-            self._drag_end = self._drag_start
+        if self._state == DiagramEditor.NONE:
+            selected_element = self.element_at_pos(d)
+            if selected_element is not None:
+                self._state = DiagramEditor.ELEMENT_CLICK
+                self._selected_element = selected_element
+                self.element_selected.emit(selected_element)
+            else:
+                self._state = DiagramEditor.EMPTY_CLICK
+            self._start = p
+            self._end = p
+            self.update()
+        elif self._state == DiagramEditor.SELECT:
+            selected_element = self.element_at_pos(d)
+            if selected_element is None:
+                self._state = DiagramEditor.EMPTY_CLICK
+                self._start = p
+                self._end = p
+                self.element_selected.emit(selected_element)
+                self.update()
+            else:
+                if self._selected_element is not selected_element:
+                    self.element_selected.emit(selected_element)
+                self._selected_element = selected_element
+                self._state = DiagramEditor.ELEMENT_CLICK
+        elif self._state != DiagramEditor.PLACE:
+            self._state = DiagramEditor.NONE
+            self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent):
-        p = event.pos() / self.grid_size
-        self._wire_end = p
-        self._drag_end = p
-        if self._curr_wire() is not None:
+        d = event.pos() - self._translation
+        p = d / self.grid_size
+
+        if self._mode == DiagramEditor.VIEW:
+            if self._state == DiagramEditor.CLICK:
+                self._state = DiagramEditor.MOVE
+                self.setCursor(Qt.ClosedHandCursor)
+                self._end = d
+                self.update()
+            elif self._state == DiagramEditor.MOVE:
+                self.setCursor(Qt.ClosedHandCursor)
+                self._end = d
+                self.update()
+            return
+
+        if self._state == DiagramEditor.PLACE:
+            self._placing_element.position = (p.x(), p.y())
             self.update()
-        if self._drag_start is not None:
+        elif self._state == DiagramEditor.ELEMENT_CLICK:
+            self._state = DiagramEditor.DRAG
+            self._end = p
             self.update()
-        if self.placing_element is not None:
-            self.placing_element.position = (p.x(), p.y())
+        elif self._state == DiagramEditor.DRAG:
+            self._end = p
+            self.update()
+        elif self._state == DiagramEditor.EMPTY_CLICK:
+            self._state = DiagramEditor.WIRE
+            self._end = p
+            self.update()
+        elif self._state == DiagramEditor.WIRE:
+            self._end = p
             self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent):
-        if self._drag_start is not None:
+        if self._mode == DiagramEditor.VIEW:
+            if self._state == DiagramEditor.MOVE:
+                self.setCursor(Qt.PointingHandCursor)
+                self._state = DiagramEditor.NONE
+                self._translation += self._end - self._start
+                self.update()
+            elif self._state == DiagramEditor.CLICK:
+                self._state = DiagramEditor.NONE
+                # TODO: interact
+                self.update()
+            return
+
+        if self._state == DiagramEditor.PLACE:
+            self._state = DiagramEditor.SELECT
+            self.diagram.add_element(self._placing_element)
+            self._selected_element = self._placing_element
+            self.update()
+        elif self._state == DiagramEditor.DRAG:
             el = self._selected_element
             pos = QPoint(*el.position)
-            pos += self._drag_end - self._drag_start
+            pos += self._end - self._start
             el.position = (pos.x(), pos.y())
+            self._state = DiagramEditor.NONE
             self.update()
-        else:
-            self._wire_end = event.pos() / self.grid_size
-            wire = self._curr_wire()
+        elif self._state == DiagramEditor.WIRE:
+            wire = self._get_wire()
             if wire is not None:
                 self.diagram.change_wire(
                     wire.x1(), wire.y1(), wire.x2(), wire.y2())
-                self.update()
-
-        if self.placing_element is not None:
-            self.diagram.add_element(self.placing_element)
-            self.placing_element = None
+            self._state = DiagramEditor.NONE
             self.update()
-
-        self._wire_start = None
-        self._drag_start = None
-
-    def _curr_wire(self):
-        if self._wire_start is not None:
-            ws, we = self._wire_start, self._wire_end
-            delta = we - ws
-            if delta == QPoint():
-                return None
-            if abs(delta.x()) > abs(delta.y()):
-                return QLine(ws.x(), ws.y(), we.x(), ws.y())
-            else:
-                return QLine(ws.x(), ws.y(), ws.x(), we.y())
-        return None
+        elif self._state == DiagramEditor.ELEMENT_CLICK:
+            self._state = DiagramEditor.SELECT
+            self.update()
+        elif self._state == DiagramEditor.EMPTY_CLICK:
+            self._state = DiagramEditor.NONE
+            self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -247,11 +347,19 @@ class DiagramEditor(QWidget):
 
         painter.fillRect(self.rect(), Qt.white)
 
+        if self._mode == DiagramEditor.VIEW and self._state == DiagramEditor.MOVE:
+            trans = self._translation + self._end - self._start
+        else:
+            trans = self._translation
+
+        painter.translate(trans)
         painter.setPen(QPen(Qt.black, 0.1))
-        for x in range(self.grid_size, self.width(), self.grid_size):
-            painter.drawLine(x, 0, x, self.height())
-        for y in range(self.grid_size, self.height(), self.grid_size):
-            painter.drawLine(0, y, self.width(), y)
+        ttrans = trans / self.grid_size
+        tx, ty = ttrans.x() * self.grid_size, ttrans.y() * self.grid_size
+        for x in range(0, self.width(), self.grid_size):
+            painter.drawLine(x - tx, -ty, x - tx, self.height()-ty)
+        for y in range(0, self.height(), self.grid_size):
+            painter.drawLine(-tx, y-ty, self.width()-tx, y-ty)
 
         gs = self.grid_size
 
@@ -259,6 +367,9 @@ class DiagramEditor(QWidget):
             facing = element.facing
             x, y = element.position
             xb, yb, w, h = element.bounding_rect
+
+            if self._state == DiagramEditor.DRAG and self._selected_element is element:
+                continue
 
             painter.save()
             painter.translate(x * gs, y * gs)
@@ -268,7 +379,7 @@ class DiagramEditor(QWidget):
             painter.setPen(QPen(Qt.black, 2.0))
             painter.drawRect(xb * gs, yb * gs, w * gs, h * gs)
 
-            if self._selected_element is element:
+            if self._state == DiagramEditor.SELECT and self._selected_element is element:
                 r = QRect(xb * gs, yb * gs, w * gs, h * gs)
                 r = r.marginsAdded(QMargins(*(5,)*4))
                 painter.setPen(QPen(Qt.red, 1.0))
@@ -284,15 +395,15 @@ class DiagramEditor(QWidget):
 
             painter.restore()
 
-        if self._drag_start is not None or self.placing_element is not None:
-            if self._drag_start is not None:
+        if self._state in (DiagramEditor.DRAG, DiagramEditor.PLACE):
+            if self._state == DiagramEditor.DRAG:
                 element = self._selected_element
-                delta = self._drag_end - self._drag_start
+                delta = self._end - self._start
                 x, y = element.position
                 x += delta.x()
                 y += delta.y()
             else:
-                element = self.placing_element
+                element = self._placing_element
                 x, y = element.position
             facing = element.facing
             xb, yb, w, h = element.bounding_rect
@@ -319,11 +430,14 @@ class DiagramEditor(QWidget):
             painter.restore()
 
         wires = list()
-        curr_wire = self._curr_wire()
 
-        if self._drag_start is None and curr_wire is not None:
-            wiremap = self.diagram.construct_wire(
-                curr_wire.x1(), curr_wire.y1(), curr_wire.x2(), curr_wire.y2())
+        if self._state == DiagramEditor.WIRE:
+            curr_wire = self._get_wire()
+            if curr_wire:
+                wiremap = self.diagram.construct_wire(
+                    curr_wire.x1(), curr_wire.y1(), curr_wire.x2(), curr_wire.y2())
+            else:
+                wiremap = self.diagram.wires
         else:
             wiremap = self.diagram.wires
 
@@ -366,6 +480,10 @@ LIBRARY = {
         'XNOR Gate':  element_factory(Gate, 'xnor', Gate.XOR, negated=True),
     }
 }
+
+
+class ElementTree:
+    pass
 
 
 class MainWindow(QMainWindow):
@@ -422,12 +540,12 @@ class MainWindow(QMainWindow):
             schematic = diagram.schematic
             element = Element(base_name + '_' +
                               str(counter[base_name]), schematic)
-            diag.placing_element = element
+            diag.start_placing(element)
 
         def add_element(item):
             factory = item.data(0, Qt.UserRole)
             element = factory()
-            diag.placing_element = element
+            diag.start_placing(element)
 
         diagram_tree.itemClicked.connect(add_custom_element)
         diagram_tree.itemDoubleClicked.connect(change_diagram)
