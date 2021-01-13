@@ -1,5 +1,5 @@
+from diagram import Diagram, Element
 import json
-from json.decoder import JSONDecodeError
 from bidict import bidict
 
 from version import VERSION
@@ -62,7 +62,27 @@ def _dict_to_desc(d):
         return ExposedPin(ExposedPin.IN if d['direction'] == 'in' else ExposedPin.OUT, d['width'])
 
 
-def load(obj):
+def _dict_to_element(d):
+    name = d['name']
+    descriptor = _dict_to_desc(d['descriptor'])
+    position = tuple(d['position'])
+    facing = d['facing']
+
+    return Element(name, descriptor, qAddPostRoutine, facing)
+
+
+def _element_to_dict(element: Element):
+    d = dict()
+
+    d['name'] = element.name
+    d['descriptor'] = _desc_to_dict(element.descriptor)
+    d['position'] = list(element.position)
+    d['facing'] = element.facing
+
+    return d
+
+
+def load_diagram(obj):
     d = json.load(obj)
 
     # version = d['version']
@@ -71,10 +91,20 @@ def load(obj):
     return root
 
 
-def save(obj, root):
+def _diagram_to_dict(diagram: Diagram):
+    d = dict()
+
+    d['elements'] = list(map(_element_to_dict, diagram.elements))
+    diagram.wires
+
+def save_diagram(obj, diagrams):
     d = dict()
 
     d['version'] = VERSION
-    d['root'] = _desc_to_dict(root)
+    d['diagrams'] = list()
+
+    for diagram in diagrams:
+        d['schematic'] = _desc_to_dict()
+        d['connections'] = pass
 
     json.dump(d, obj, indent=4)

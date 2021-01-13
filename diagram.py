@@ -1,7 +1,6 @@
 from collections import defaultdict
 from copy import deepcopy
 
-from PySide2.QtGui import QColorConstants
 from descriptors import ExposedPin, Gate, Not, Schematic, topology
 
 
@@ -95,7 +94,7 @@ class Diagram:
         self.wires = defaultdict(WireNode)
         self.schematic = Schematic()
 
-    def _reconstruct(self):
+    def reconstruct(self):
         s = self.schematic
 
         self.schematic.children.clear()
@@ -150,11 +149,11 @@ class Diagram:
 
     def remove_element(self, element):
         self.elements.remove(element)
-        self._reconstruct()
+        self.reconstruct()
 
     def add_element(self, element):
         self.elements.append(element)
-        self._reconstruct()
+        self.reconstruct()
 
     def construct_wires(self, to_place):
         wires = deepcopy(self.wires)
@@ -184,4 +183,4 @@ class Diagram:
 
     def change_wires(self, to_place):
         self.wires = self.construct_wires(to_place)
-        self._reconstruct()
+        self.reconstruct()

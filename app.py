@@ -1,16 +1,17 @@
 from collections import defaultdict
 from itertools import chain
 import math
+
 from simulator import JIT
 from typing import Text
-from PySide2.QtCore import QLine, QLineF, QMargins, QPoint, QRect, QStateMachine, QTime, QTimer, Qt, Signal
-from PySide2.QtGui import QColor, QKeySequence, QMouseEvent, QPainter, QPalette, QPen, QStandardItem, QStandardItemModel, QTransform, QVector2D
+from PySide2.QtCore import QCoreApplication, QLine, QLineF, QMargins, QPoint, QRect, QTime, QTimer, Qt, Signal
+from PySide2.QtGui import QColor, QKeySequence, QMouseEvent, QPainter, QPalette, QPen, QScreen, QStandardItem, QStandardItemModel, QTransform, QVector2D, QPixmap, QGuiApplication
 from diagram import Diagram, EAST, Element, NORTH, SOUTH, WEST, rotate
 from descriptors import ExposedPin, Gate, Not
 
 from version import format_version
 
-from PySide2.QtWidgets import QAction, QCheckBox, QComboBox, QCommonStyle, QDockWidget, QFormLayout, QLineEdit, QListView, QListWidget, QListWidgetItem, QMainWindow, QApplication, QMenu, QMenuBar, QPushButton, QShortcut, QSpinBox, QStyle, QStyleFactory, QToolBar, QTreeView, QTreeWidget, QTreeWidgetItem, QWidget
+from PySide2.QtWidgets import QCheckBox, QComboBox, QCommonStyle, QDockWidget, QFormLayout, QLineEdit, QListView, QListWidget, QListWidgetItem, QMainWindow, QApplication, QMenu, QMenuBar, QPushButton, QSpinBox, QStyle, QStyleFactory, QToolBar, QTreeView, QTreeWidget, QTreeWidgetItem, QWidget, QAction, QShortcut
 
 
 def make_line_edit(desc, attribute, callback=None):
@@ -137,6 +138,10 @@ class ElementEditor(QWidget):
             }, callback=emit_edited))
 
 
+def paint_element(painter: QPainter, element: Element, ghost):
+    pass
+
+
 class DiagramEditor(QWidget):
     EDIT, VIEW = range(2)
     NONE, ELEMENT_CLICK, EMPTY_CLICK, WIRE, DRAG, SELECT, PLACE, CLICK, MOVE = range(
@@ -149,6 +154,8 @@ class DiagramEditor(QWidget):
         self.diagram = diagram
         self.grid_size = grid_size
         self.executor = None
+
+        self._grid = self._make_grid()
 
         self._translation = QPoint()
 
@@ -169,6 +176,8 @@ class DiagramEditor(QWidget):
         def delete_element():
             if self._state == DiagramEditor.SELECT:
                 self.diagram.remove_element(self._selected_element)
+                self._selected_element = None
+                self.element_selected.emit(None)
                 self._state = DiagramEditor.NONE
                 self.update()
 
@@ -285,10 +294,11 @@ class DiagramEditor(QWidget):
             self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent):
-        d = event.pos() - self._translation
+        ep = event.pos()
+        d = ep - self._translation
         gs = self.grid_size
         p = QPoint(round(d.x() / gs), round(d.y() / gs))
-        self._cursor_pos = (event.pos() / self.grid_size) * self.grid_size
+        self._cursor_pos = QPoint(round(ep.x() / gs), round(ep.y() / gs)) * gs
         self.update()
 
         if self._mode == DiagramEditor.VIEW:
@@ -360,33 +370,44 @@ class DiagramEditor(QWidget):
             self._state = DiagramEditor.NONE
             self.update()
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.HighQualityAntialiasing)
+    def _make_grid(self):
+        pixmap = QPixmap(512, 512)
+        painter = QPainter(pixmap)
 
         back_col = QApplication.palette().color(QPalette.Base)
+        grid_col = QApplication.palette().color(QPalette.WindowText)
+
+        painter.fillRect(pixmap.rect(), back_col)
+
+        painter.setPen(QPen(grid_col, 1))
+        for x in range(self.grid_size // 2, pixmap.width(), self.grid_size):
+            for y in range(self.grid_size // 2, pixmap.height(), self.grid_size):
+                painter.drawPoint(x, y)
+
+        return pixmap
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
         tex_col = QApplication.palette().color(QPalette.WindowText)
-        wid_col = back_col
-        grid_col = tex_col
         wire_col = tex_col
         cur_col = tex_col
-
-        painter.fillRect(self.rect(), wid_col)
 
         if self._mode == DiagramEditor.VIEW and self._state == DiagramEditor.MOVE:
             trans = self._translation + self._end - self._start
         else:
             trans = self._translation
 
-        painter.translate(trans)
-        painter.setPen(QPen(grid_col, 1))
-        ttrans = trans / self.grid_size
-        tx, ty = ttrans.x() * self.grid_size, ttrans.y() * self.grid_size
-        for x in range(0, self.width(), self.grid_size):
-            for y in range(0, self.height(), self.grid_size):
-                painter.drawPoint(x - tx, y-ty)
-
         gs = self.grid_size
+
+        ttrans = trans / gs
+        tx, ty = ttrans.x() * gs, ttrans.y() * gs
+
+        painter.translate(trans)
+        grid_rect = self.rect().marginsAdded(
+            QMargins(*(gs / 2,) * 4)).translated(-QPoint(tx, ty))
+        painter.drawTiledPixmap(grid_rect, self._grid)
 
         for element in self.diagram.elements:
             facing = element.facing
@@ -482,7 +503,7 @@ class DiagramEditor(QWidget):
         painter.setPen(QPen(wire_col, 2.0))
         painter.drawLines(wires)
 
-        if self._state not in (DiagramEditor.DRAG, DiagramEditor.PLACE):
+        if self._mode != self.VIEW and self._state not in (DiagramEditor.DRAG, DiagramEditor.PLACE):
             painter.setPen(QPen(cur_col, 2.0))
             painter.drawArc(self._cursor_pos.x() - tx - 6,
                             self._cursor_pos.y() - ty - 6, 12, 12, 0, 360 * 16)
@@ -630,7 +651,8 @@ class MainWindow(QMainWindow):
                 diag.executor = None
             else:
                 simulate_btn.setText('Stop')
-                s = d.schematic
+                diag.diagram.reconstruct()
+                s = diag.diagram.schematic
                 exe = JIT(s)
                 diag.executor = exe
                 exe.step()
@@ -666,23 +688,12 @@ class MainWindow(QMainWindow):
 def run_app():
     from sys import argv
 
+    QGuiApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
+    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+
     app = QApplication(argv)
-    app.setStyle(QStyleFactory.create('fusion'))
-    # palette = app.palette()
-    # palette.setColor(QPalette.Window, QColor(53, 53, 53))
-    # palette.setColor(QPalette.WindowText, Qt.white)
-    # palette.setColor(QPalette.Base, QColor(15, 15, 15))
-    # palette.setColor(QPalette.AlternateBase, QColor(53, 53, 53))
-    # palette.setColor(QPalette.ToolTipBase, Qt.white)
-    # palette.setColor(QPalette.ToolTipText, Qt.white)
-    # palette.setColor(QPalette.Text, Qt.white)
-    # palette.setColor(QPalette.Button, QColor(53, 53, 53))
-    # palette.setColor(QPalette.ButtonText, Qt.white)
-    # palette.setColor(QPalette.BrightText, Qt.red)
-    # palette.setColor(QPalette.Highlight, QColor(44, 117, 255))
-    # palette.setColor(QPalette.HighlightedText, Qt.black)
-    # app.setPalette(palette)
-    # QApplication.setPalette(palette)
+    print(app.devicePixelRatio())
     window = MainWindow()
     window.showMaximized()
     return app.exec_()

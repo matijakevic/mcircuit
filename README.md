@@ -12,6 +12,7 @@ Thanks to Logisim for inspiration.
 ## Dependencies
 - Python 3
 - PySide 2
+- bidict
 - llvmlite (optional)
 
 I recommend using Python 3.8 for now, because llvmlite
@@ -21,5 +22,5 @@ If llvmlite cannot be imported, the simulator will
 use the custom interpreter (which is very slow).
 
 ## Running
-1. install dependencies: `pip install pyside2 llvmlite`
+1. install dependencies: `pip install -r requirements.txt`
 2. run: `python main.py`
