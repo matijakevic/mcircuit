@@ -36,9 +36,9 @@ class Element:
             return -4, -h - 1, 4, h * 2 + 2
         elif isinstance(desc, ExposedPin):
             if desc.direction == ExposedPin.OUT:
-                return 0, -1, 1, 2
+                return 0, -1, desc.width, 2
             else:
-                return -1, -1, 1, 2
+                return -desc.width, -1, desc.width, 2
         elif isinstance(desc, Schematic):
             num_inputs = len(tuple(desc.all_inputs()))
             num_outputs = len(tuple(desc.all_outputs()))
@@ -84,7 +84,10 @@ class Element:
 class WireNode:
     def __init__(self):
         self.connections = [False] * 4
-        self.junction = False
+        self.overlap = False
+
+    def all_connected(self):
+        return all(self.connections)
 
 
 class Diagram:
@@ -120,27 +123,47 @@ class Diagram:
 
         def _bfs(source):
             desc1, pin1 = source[0], source[1]
-            to_explore = [source[2]]
+            to_explore = [(source[2], source[2])]
             visited = set()
 
             while to_explore:
-                pos1 = to_explore.pop()
+                prev_pos, pos1 = to_explore.pop()
+
+                dx = pos1[0] - prev_pos[0]
+                dy = pos1[1] - prev_pos[1]
 
                 if pos1 in visited:
                     continue
                 visited.add(pos1)
 
                 for desc2, pin2, pos2 in dests:
-                    if pos1 == pos2:
-                        s.connect(desc1, pin1, desc2, pin2)
-                        break
+                    if pos1 != pos2:
+                        continue
+                    print(desc1, pin1, desc2, pin2)
+                    s.connect(desc1, pin1, desc2, pin2)
+                    break
 
                 node = self.wires[pos1]
 
-                for dir in range(4):
-                    if node.connections[dir]:
-                        r = rotate(1, 0, dir)
-                        to_explore.append((pos1[0] + r[0], pos1[1] + r[1]))
+                if node.all_connected() and node.overlap:
+                    if dx == 0:
+                        for dir in (NORTH, SOUTH):
+                            if node.connections[dir]:
+                                r = rotate(1, 0, dir)
+                                to_explore.append(
+                                    (pos1, (pos1[0] + r[0], pos1[1] + r[1])))
+                    else:
+                        for dir in (WEST, EAST):
+                            if node.connections[dir]:
+                                r = rotate(1, 0, dir)
+                                to_explore.append(
+                                    (pos1, (pos1[0] + r[0], pos1[1] + r[1])))
+                else:
+                    for dir in range(4):
+                        if node.connections[dir]:
+                            r = rotate(1, 0, dir)
+                            to_explore.append(
+                                (pos1, (pos1[0] + r[0], pos1[1] + r[1])))
 
         for source in sources:
             _bfs(source)

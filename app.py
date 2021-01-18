@@ -1,17 +1,18 @@
 from collections import defaultdict
 from itertools import chain
-import math
+from enum import Enum
 
 from simulator import JIT
-from typing import Text
 from PySide2.QtCore import QCoreApplication, QLine, QLineF, QMargins, QPoint, QRect, QTime, QTimer, Qt, Signal
-from PySide2.QtGui import QColor, QKeySequence, QMouseEvent, QPainter, QPalette, QPen, QScreen, QStandardItem, QStandardItemModel, QTransform, QVector2D, QPixmap, QGuiApplication
+from PySide2.QtGui import QColor, QKeySequence, QMouseEvent, QPainter, QPainterPath, QPalette, QPen, QScreen, QStandardItem, QStandardItemModel, QTransform, QVector2D, QPixmap, QGuiApplication
 from diagram import Diagram, EAST, Element, NORTH, SOUTH, WEST, rotate
-from descriptors import ExposedPin, Gate, Not
+from descriptors import Descriptor, ExposedPin, Gate, Not, Schematic
 
 from version import format_version
 
-from PySide2.QtWidgets import QCheckBox, QComboBox, QCommonStyle, QDockWidget, QFormLayout, QLineEdit, QListView, QListWidget, QListWidgetItem, QMainWindow, QApplication, QMenu, QMenuBar, QPushButton, QSpinBox, QStyle, QStyleFactory, QToolBar, QTreeView, QTreeWidget, QTreeWidgetItem, QWidget, QAction, QShortcut
+import pickle
+
+from PySide2.QtWidgets import QCheckBox, QComboBox, QCommonStyle, QDockWidget, QFileDialog, QFormLayout, QLineEdit, QListView, QListWidget, QListWidgetItem, QMainWindow, QApplication, QMenu, QMenuBar, QPushButton, QSpinBox, QStyle, QStyleFactory, QToolBar, QTreeView, QTreeWidget, QTreeWidgetItem, QWidget, QAction, QShortcut
 
 
 def make_line_edit(desc, attribute, callback=None):
@@ -138,15 +139,19 @@ class ElementEditor(QWidget):
             }, callback=emit_edited))
 
 
-def paint_element(painter: QPainter, element: Element, ghost):
-    pass
+class Mode(Enum):
+    EDIT, VIEW = range(2)
+
+
+class EditState(Enum):
+    NONE, ELEMENT_CLICK, EMPTY_CLICK, WIRE, DRAG, SELECT, PLACE = range(7)
+
+
+class ViewState(Enum):
+    NONE, CLICK, MOVE = range(3)
 
 
 class DiagramEditor(QWidget):
-    EDIT, VIEW = range(2)
-    NONE, ELEMENT_CLICK, EMPTY_CLICK, WIRE, DRAG, SELECT, PLACE, CLICK, MOVE = range(
-        9)
-
     element_selected = Signal(Element)
 
     def __init__(self, diagram, grid_size=16):
@@ -159,8 +164,8 @@ class DiagramEditor(QWidget):
 
         self._translation = QPoint()
 
-        self._mode = DiagramEditor.EDIT
-        self._state = DiagramEditor.NONE
+        self._mode = Mode.EDIT
+        self._state = EditState.NONE
 
         self._cursor_pos = QPoint()
 
@@ -173,41 +178,65 @@ class DiagramEditor(QWidget):
         delete_action = QShortcut(QKeySequence(Qt.Key_Delete), self)
         cancel_action = QShortcut(QKeySequence(Qt.Key_Escape), self)
 
-        def delete_element():
-            if self._state == DiagramEditor.SELECT:
-                self.diagram.remove_element(self._selected_element)
-                self._selected_element = None
-                self.element_selected.emit(None)
-                self._state = DiagramEditor.NONE
-                self.update()
+        delete_action.activated.connect(self.delete_selected_element)
+        cancel_action.activated.connect(self.cancel_interaction)
+        mode_action.activated.connect(self.toggle_interaction_mode)
 
-        delete_action.activated.connect(delete_element)
+        self.redraw_timer = QTimer()
+        self.redraw_timer.setInterval(1000 / 65)
 
-        def cancel():
-            self._state = DiagramEditor.NONE
-            if self._mode == DiagramEditor.VIEW:
-                self.setCursor(Qt.PointingHandCursor)
-            else:
-                self.setCursor(Qt.ArrowCursor)
+        def do_stuff():
+            self.executor.burst()
             self.update()
 
-        cancel_action.activated.connect(cancel)
-
-        def switch_mode():
-            self._mode = DiagramEditor.EDIT if self._mode == DiagramEditor.VIEW else DiagramEditor.VIEW
-            self._state = DiagramEditor.NONE
-            if self._mode == DiagramEditor.VIEW:
-                self.setCursor(Qt.PointingHandCursor)
-            else:
-                self.setCursor(Qt.ArrowCursor)
-            self.update()
-
-        mode_action.activated.connect(switch_mode)
+        self.redraw_timer.timeout.connect(do_stuff)
 
         self.setMouseTracking(True)
 
+    def toggle_interaction_mode(self):
+        self._mode = Mode.EDIT if self._mode == Mode.VIEW else Mode.VIEW
+        self._state = EditState.NONE if self._mode == Mode.EDIT else ViewState.NONE
+        if self._mode == Mode.VIEW:
+            self.setCursor(Qt.PointingHandCursor)
+        else:
+            self.setCursor(Qt.ArrowCursor)
+        self.update()
+
+    def cancel_interaction(self):
+        if self._mode == Mode.VIEW:
+            self._state = ViewState.NONE
+            self.setCursor(Qt.PointingHandCursor)
+        else:
+            self._state = EditState.NONE
+            self.setCursor(Qt.ArrowCursor)
+        self.update()
+
+    def select_element(self, element):
+        self._state = EditState.SELECT
+        curr = self._selected_element
+        self._selected_element = element
+        if curr is not element:
+            self.element_selected.emit(element)
+        self.update()
+
+    def unselect(self):
+        curr = self._selected_element
+        self._selected_element = None
+        self._state = EditState.NONE
+        if curr is not None:
+            self.element_selected.emit(None)
+        self.update()
+
+    def delete_element(self, element):
+        self.diagram.remove_element(element)
+        if self._state == EditState.SELECT and self._selected_element is element:
+            self.unselect()
+
+    def delete_selected_element(self):
+        self.delete_element(self._selected_element)
+
     def _get_wire(self):
-        if self._state != DiagramEditor.WIRE:
+        if self._state != EditState.WIRE:
             return None
         ws, we = self._start, self._end
         delta = we - ws
@@ -222,8 +251,16 @@ class DiagramEditor(QWidget):
             yield (ws.x(), we.y(), we.x(), we.y())
 
     def start_placing(self, element):
-        self._state = DiagramEditor.PLACE
+        if self._mode != Mode.EDIT:
+            self.toggle_interaction_mode()
+        self._state = EditState.PLACE
         self._placing_element = element
+        self.update()
+
+    def stop_placing(self):
+        self._mode = Mode.EDIT
+        self._state = EditState.NONE
+        self.update()
 
     def element_at_pos(self, pos):
         gs = self.grid_size
@@ -257,40 +294,40 @@ class DiagramEditor(QWidget):
         d = event.pos() - self._translation
         p = QPoint(round(d.x() / gs), round(d.y() / gs))
 
-        if self._mode == DiagramEditor.VIEW:
-            self._state = DiagramEditor.CLICK
+        if self._mode == Mode.VIEW:
+            self._state = ViewState.CLICK
             self._start = d
             self._end = d
             self.update()
             return
 
-        if self._state == DiagramEditor.NONE:
+        if self._state == EditState.NONE:
             selected_element = self.element_at_pos(d)
             if selected_element is not None:
-                self._state = DiagramEditor.ELEMENT_CLICK
+                self._state = EditState.ELEMENT_CLICK
                 self._selected_element = selected_element
                 self.element_selected.emit(selected_element)
             else:
-                self._state = DiagramEditor.EMPTY_CLICK
+                self._state = EditState.EMPTY_CLICK
             self._start = p
             self._end = p
             self.update()
-        elif self._state == DiagramEditor.SELECT:
+        elif self._state == EditState.SELECT:
             selected_element = self.element_at_pos(d)
             if selected_element is None:
-                self._state = DiagramEditor.EMPTY_CLICK
+                self._state = EditState.EMPTY_CLICK
                 self.element_selected.emit(selected_element)
                 self.update()
             else:
                 if self._selected_element is not selected_element:
                     self.element_selected.emit(selected_element)
                     self._selected_element = selected_element
-                self._state = DiagramEditor.ELEMENT_CLICK
+                self._state = EditState.ELEMENT_CLICK
                 self.update()
             self._start = p
             self._end = p
-        elif self._state != DiagramEditor.PLACE:
-            self._state = DiagramEditor.NONE
+        elif self._state != EditState.PLACE:
+            self._state = EditState.NONE
             self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent):
@@ -301,77 +338,102 @@ class DiagramEditor(QWidget):
         self._cursor_pos = QPoint(round(ep.x() / gs), round(ep.y() / gs)) * gs
         self.update()
 
-        if self._mode == DiagramEditor.VIEW:
-            if self._state == DiagramEditor.CLICK:
-                self._state = DiagramEditor.MOVE
+        if self._mode == Mode.VIEW:
+            if self._state == ViewState.CLICK:
+                self._state = ViewState.MOVE
                 self.setCursor(Qt.ClosedHandCursor)
                 self._end = d
                 self.update()
-            elif self._state == DiagramEditor.MOVE:
+            elif self._state == ViewState.MOVE:
                 self.setCursor(Qt.ClosedHandCursor)
                 self._end = d
                 self.update()
             return
 
-        if self._state == DiagramEditor.PLACE:
+        if self._state == EditState.PLACE:
             self._placing_element.position = (p.x(), p.y())
             self.update()
-        elif self._state == DiagramEditor.ELEMENT_CLICK:
-            self._state = DiagramEditor.DRAG
+        elif self._state == EditState.ELEMENT_CLICK:
+            self._state = EditState.DRAG
             self._end = p
             self.update()
-        elif self._state == DiagramEditor.DRAG:
+        elif self._state == EditState.DRAG:
             self._end = p
             self.update()
-        elif self._state == DiagramEditor.EMPTY_CLICK:
-            self._state = DiagramEditor.WIRE
+        elif self._state == EditState.EMPTY_CLICK:
+            self._state = EditState.WIRE
             self._end = p
             self.update()
-        elif self._state == DiagramEditor.WIRE:
+        elif self._state == EditState.WIRE:
             self._end = p
             self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent):
-        if self._mode == DiagramEditor.VIEW:
-            if self._state == DiagramEditor.MOVE:
+        ep = event.pos()
+        d = ep - self._translation
+        gs = self.grid_size
+        p = QPoint(round(d.x() / gs), round(d.y() / gs))
+
+        if self._mode == Mode.VIEW:
+            if self._state == ViewState.MOVE:
                 self.setCursor(Qt.PointingHandCursor)
-                self._state = DiagramEditor.NONE
+                self._state = ViewState.NONE
                 self._translation += self._end - self._start
                 self.update()
-            elif self._state == DiagramEditor.CLICK:
-                self._state = DiagramEditor.NONE
-                # TODO: interact
+            elif self._state == ViewState.CLICK:
+                element = self.element_at_pos(d)
+                if self.executor is not None and element is not None:
+                    if isinstance(element.descriptor, ExposedPin):
+                        desc = element.descriptor
+                        if desc.direction == ExposedPin.IN:
+                            x, y = element.position
+                            xb, yb, w, h = element.bounding_rect
+                            state = self.executor.get_pin_state(
+                                element.name + '.pin')
+                            for i in range(desc.width):
+                                r = QRect(x * gs + xb * gs + gs / 8 + i * gs, y * gs + yb * gs + h / 8 * gs + h * gs / 8 * 6 / 8,
+                                          gs / 8 * 6, h * gs / 8 * 6 / 8 * 6)
+                                if r.contains(d):
+                                    state ^= 1 << i
+                                    self.executor.set_pin_state(
+                                        element.name + '.pin', state)
+                                    break
+                self._state = ViewState.NONE
                 self.update()
             return
 
-        if self._state == DiagramEditor.PLACE:
-            self._state = DiagramEditor.SELECT
+        if self._state == EditState.PLACE:
+            self._state = EditState.SELECT
             self.diagram.add_element(self._placing_element)
             self._selected_element = self._placing_element
             self.element_selected.emit(self._selected_element)
             self.update()
-        elif self._state == DiagramEditor.DRAG:
+        elif self._state == EditState.DRAG:
             el = self._selected_element
             pos = QPoint(*el.position)
             pos += self._end - self._start
             el.position = (pos.x(), pos.y())
-            self._state = DiagramEditor.NONE
+            self._state = EditState.NONE
             self.update()
-        elif self._state == DiagramEditor.WIRE:
+        elif self._state == EditState.WIRE:
             wires = self._get_wire()
             if wires is not None:
                 self.diagram.change_wires(wires)
-            self._state = DiagramEditor.NONE
+            self._state = EditState.NONE
             self.update()
-        elif self._state == DiagramEditor.ELEMENT_CLICK:
-            self._state = DiagramEditor.SELECT
+        elif self._state == EditState.ELEMENT_CLICK:
+            self._state = EditState.SELECT
             self.update()
-        elif self._state == DiagramEditor.EMPTY_CLICK:
-            self._state = DiagramEditor.NONE
+        elif self._state == EditState.EMPTY_CLICK:
+            node = self.diagram.wires.get((p.x(), p.y()))
+            if node is not None and node.all_connected():
+                node.overlap ^= True
+            self._state = EditState.NONE
             self.update()
 
     def _make_grid(self):
         pixmap = QPixmap(512, 512)
+        pixmap.setDevicePixelRatio(self.devicePixelRatio())
         painter = QPainter(pixmap)
 
         back_col = QApplication.palette().color(QPalette.Base)
@@ -386,6 +448,151 @@ class DiagramEditor(QWidget):
 
         return pixmap
 
+    def paint_element(self, painter: QPainter, element: Element, position, ghost, selected):
+        gs = self.grid_size
+        facing = element.facing
+        x, y = position
+        xb, yb, w, h = element.bounding_rect
+
+        if ghost:
+            black = QColor.fromRgbF(0.0, 0.0, 0.0, 0.5)
+            white = QColor.fromRgbF(1.0, 1.0, 1.0, 0.5)
+        else:
+            black = Qt.black
+            white = Qt.white
+
+        painter.save()
+        painter.translate(x * gs, y * gs)
+        painter.rotate(facing * -90)
+
+        desc = element.descriptor
+
+        if isinstance(desc, Not):
+            path = QPainterPath()
+            path.moveTo(xb * gs, yb * gs)
+            path.lineTo(xb * gs + w * gs, yb * gs + h / 2 * gs)
+            path.lineTo(xb * gs, yb * gs + h * gs)
+            path.closeSubpath()
+            painter.fillPath(path, white)
+            painter.setPen(QPen(black, 2.0))
+            painter.drawPath(path)
+
+            path = QPainterPath()
+            path.addEllipse(xb * gs + w * gs - gs/2.5, yb * gs +
+                            h * gs / 2 - gs / 2.5, gs * 4 / 5, gs * 4 / 5)
+
+            painter.fillPath(path, white)
+            painter.drawPath(path)
+        elif isinstance(desc, ExposedPin):
+            path = QPainterPath()
+            path.addRect(xb * gs, yb * gs + h / 8 * gs, w * gs,
+                         h * gs / 8 * 6)
+            painter.fillPath(path, white)
+            painter.setPen(QPen(black, 2.0))
+            painter.drawPath(path)
+
+            if self.executor is None:
+                state = None
+            else:
+                state = self.executor.get_pin_state(element.name + '.pin')
+
+            painter.setPen(QPen(Qt.black))
+
+            for i in range(desc.width):
+                r = QRect(xb * gs + gs / 8 + i * gs, yb * gs + h / 8 * gs + h * gs / 8 * 6 / 8,
+                          gs / 8 * 6, h * gs / 8 * 6 / 8 * 6)
+
+                if state is not None:
+                    painter.drawText(r, Qt.AlignCenter, str(
+                        1 if state & (1 << i) else 0))
+        elif isinstance(desc, Gate):
+            op = desc.op
+
+            path = QPainterPath()
+            if op == Gate.OR:
+                path.moveTo(xb * gs, yb * gs)
+                path.quadTo(xb * gs + w * gs / 2, yb * gs, xb *
+                            gs + w * gs, yb * gs + h * gs / 2)
+                path.quadTo(xb * gs + w * gs / 2, yb * gs + h *
+                            gs, xb * gs, yb * gs + h * gs)
+                path.quadTo(xb * gs + w * gs / 4, yb * gs +
+                            h * gs / 2, xb * gs, yb * gs)
+            elif op == Gate.AND:
+
+                path.moveTo(xb * gs, yb * gs)
+                path.lineTo(xb * gs + w * gs / 2, yb * gs)
+                path.quadTo(xb * gs + w * gs, yb * gs, xb *
+                            gs + w * gs, yb * gs + h * gs / 2)
+                path.quadTo(xb * gs + w * gs, yb * gs + h *
+                            gs, xb * gs + w * gs / 2, yb * gs + h * gs)
+                path.lineTo(xb * gs, yb * gs + h * gs)
+                path.closeSubpath()
+            elif op == Gate.XOR:
+                path.moveTo(xb * gs + gs / 4, yb * gs)
+                path.quadTo(xb * gs + w * gs / 2, yb * gs, xb *
+                            gs + w * gs, yb * gs + h * gs / 2)
+                path.quadTo(xb * gs + w * gs / 2, yb * gs + h *
+                            gs, xb * gs + gs / 4, yb * gs + h * gs)
+                path.quadTo(xb * gs + w * gs / 4 + gs / 4, yb * gs +
+                            h * gs / 2, xb * gs + gs / 4, yb * gs)
+                path.closeSubpath()
+
+                path.moveTo(xb * gs, yb * gs)
+                path.quadTo(xb * gs + w * gs / 4, yb * gs +
+                            h * gs / 2, xb * gs, yb * gs + h * gs)
+
+            painter.fillPath(path, white)
+            painter.setPen(QPen(black, 2.0))
+            painter.drawPath(path)
+
+            if desc.negated:
+                path = QPainterPath()
+                path.addEllipse(xb * gs + w * gs - gs/2.5, yb * gs +
+                                h * gs / 2 - gs / 2.5, gs * 4 / 5, gs * 4 / 5)
+                painter.fillPath(path, white)
+                painter.drawPath(path)
+        else:
+            painter.fillRect(xb * gs, yb * gs, w * gs, h * gs, white)
+            painter.setPen(QPen(black, 2.0))
+            painter.drawRect(xb * gs, yb * gs, w * gs, h * gs)
+
+        if selected:
+            r = QRect(xb * gs, yb * gs, w * gs, h * gs)
+            r = r.marginsAdded(QMargins(*(5,)*4))
+            painter.setPen(QPen(Qt.red, 1.0))
+            painter.drawRect(r)
+
+        if ghost:
+            for pos, name in chain(element.all_inputs(),
+                                   element.all_outputs()):
+                pins = list()
+                for pos, _ in chain(element.all_inputs(),
+                                    element.all_outputs()):
+                    pins.append(QPoint(pos[0], pos[1]) * gs)
+
+                painter.setPen(QPen(black, 6.0))
+                painter.drawPoints(pins)
+        else:
+            for pos, name in chain(element.all_inputs(),
+                                   element.all_outputs()):
+                state = -1
+                if self.executor is not None:
+                    if isinstance(element.descriptor, Schematic):
+                        path = element.name + '.' + name + '.pin'
+                    else:
+                        path = element.name + '.' + name
+                    state = self.executor.get_pin_state(path)
+                if state == -1:
+                    painter.setPen(QPen(Qt.blue, 6.0))
+                elif state == 0:
+                    painter.setPen(QPen(Qt.black, 6.0))
+                else:
+                    painter.setPen(QPen(Qt.green, 6.0))
+                p = QPoint(pos[0], pos[1]) * gs
+                painter.drawPoint(p)
+
+        painter.restore()
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -394,7 +601,7 @@ class DiagramEditor(QWidget):
         wire_col = tex_col
         cur_col = tex_col
 
-        if self._mode == DiagramEditor.VIEW and self._state == DiagramEditor.MOVE:
+        if self._mode == Mode.VIEW and self._state == ViewState.MOVE:
             trans = self._translation + self._end - self._start
         else:
             trans = self._translation
@@ -410,46 +617,16 @@ class DiagramEditor(QWidget):
         painter.drawTiledPixmap(grid_rect, self._grid)
 
         for element in self.diagram.elements:
-            facing = element.facing
-            x, y = element.position
-            xb, yb, w, h = element.bounding_rect
-
-            if self._state == DiagramEditor.DRAG and self._selected_element is element:
+            if self._state == EditState.DRAG and self._selected_element is element:
                 continue
 
-            painter.save()
-            painter.translate(x * gs, y * gs)
-            painter.rotate(facing * -90)
+            selected = self._state == EditState.SELECT and self._selected_element is element
 
-            painter.fillRect(xb * gs, yb * gs, w * gs, h * gs, Qt.white)
-            painter.setPen(QPen(Qt.black, 2.0))
-            painter.drawRect(xb * gs, yb * gs, w * gs, h * gs)
+            self.paint_element(
+                painter, element, element.position, False, selected)
 
-            if self._state == DiagramEditor.SELECT and self._selected_element is element:
-                r = QRect(xb * gs, yb * gs, w * gs, h * gs)
-                r = r.marginsAdded(QMargins(*(5,)*4))
-                painter.setPen(QPen(Qt.red, 1.0))
-                painter.drawRect(r)
-
-            for pos, name in chain(element.all_inputs(),
-                                   element.all_outputs()):
-                state = -1
-                if self.executor is not None:
-                    state = self.executor.get_pin_state(
-                        element.name + '.' + name)
-                if state == -1:
-                    painter.setPen(QPen(Qt.blue, 6.0))
-                elif state == 0:
-                    painter.setPen(QPen(Qt.black, 6.0))
-                else:
-                    painter.setPen(QPen(Qt.green, 6.0))
-                p = QPoint(pos[0], pos[1]) * gs
-                painter.drawPoint(p)
-
-            painter.restore()
-
-        if self._state in (DiagramEditor.DRAG, DiagramEditor.PLACE):
-            if self._state == DiagramEditor.DRAG:
+        if self._state in (EditState.DRAG, EditState.PLACE):
+            if self._state == EditState.DRAG:
                 element = self._selected_element
                 delta = self._end - self._start
                 x, y = element.position
@@ -458,33 +635,13 @@ class DiagramEditor(QWidget):
             else:
                 element = self._placing_element
                 x, y = element.position
-            facing = element.facing
-            xb, yb, w, h = element.bounding_rect
 
-            ghost_black = QColor.fromRgbF(0.0, 0.0, 0.0, 0.5)
-            ghost_white = QColor.fromRgbF(1.0, 1.0, 1.0, 0.5)
-
-            painter.save()
-            painter.translate(x * gs, y * gs)
-            painter.rotate(facing * -90)
-
-            painter.fillRect(xb * gs, yb * gs, w * gs, h * gs, ghost_white)
-            painter.setPen(QPen(ghost_black, 2.0))
-            painter.drawRect(xb * gs, yb * gs, w * gs, h * gs)
-
-            pins = list()
-            for pos, _ in chain(element.all_inputs(),
-                                element.all_outputs()):
-                pins.append(QPoint(pos[0], pos[1]) * gs)
-
-            painter.setPen(QPen(ghost_black, 6.0))
-            painter.drawPoints(pins)
-
-            painter.restore()
+            self.paint_element(
+                painter, element, (x, y), True, False)
 
         wires = list()
 
-        if self._state == DiagramEditor.WIRE:
+        if self._state == EditState.WIRE:
             curr_wires = self._get_wire()
             if curr_wires is not None:
                 wiremap = self.diagram.construct_wires(curr_wires)
@@ -493,7 +650,11 @@ class DiagramEditor(QWidget):
         else:
             wiremap = self.diagram.wires
 
+        painter.setPen(QPen(wire_col, 4.0))
+
         for pos, node in wiremap.items():
+            if node.all_connected() and not node.overlap:
+                painter.drawPoint(QPoint(*pos) * gs)
             for dir in range(4):
                 if node.connections[dir]:
                     p1 = QPoint(*pos) * gs
@@ -503,7 +664,7 @@ class DiagramEditor(QWidget):
         painter.setPen(QPen(wire_col, 2.0))
         painter.drawLines(wires)
 
-        if self._mode != self.VIEW and self._state not in (DiagramEditor.DRAG, DiagramEditor.PLACE):
+        if self._mode != Mode.VIEW and self._state not in (EditState.DRAG, EditState.PLACE):
             painter.setPen(QPen(cur_col, 2.0))
             painter.drawArc(self._cursor_pos.x() - tx - 6,
                             self._cursor_pos.y() - ty - 6, 12, 12, 0, 360 * 16)
@@ -555,23 +716,47 @@ class MainWindow(QMainWindow):
 
         file_menu = QMenu('File')
         file_menu.addAction('New')
-        file_menu.addAction('Open...')
+
+        def open_project():
+            nonlocal diagrams, diagram_count
+            diag.diagram = Diagram('')
+            diagram_tree.clear()
+            f = QFileDialog.getOpenFileName(self, 'Open Project')[0]
+            with open(f, 'rb') as file:
+                diagrams = pickle.load(file)
+                print(diagrams)
+                for d in diagrams:
+                    diagram_count += 1
+                    it = QListWidgetItem(d.name)
+                    it.setData(Qt.UserRole, d)
+                    diagram_tree.addItem(it)
+                    if d.name == 'main':
+                        diag.diagram = d
+
+        def save_project():
+            f = QFileDialog.getSaveFileName(self, 'Save Project')[0]
+            with open(f, 'wb') as file:
+                pickle.dump(diagrams, file)
+
+        file_menu.addAction('Open...', open_project)
         file_menu.addSeparator()
         file_menu.addAction('Save')
-        file_menu.addAction('Save As...')
+        file_menu.addAction('Save As...', save_project)
         file_menu.addSeparator()
-        file_menu.addAction('Exit')
+        file_menu.addAction('Exit', self.close)
 
         menu_bar.addMenu(file_menu)
 
         project_menu = QMenu('Project')
 
         diagram_count = 1
+        diagrams = list()
 
         def new_diagram():
             nonlocal diagram_count
             d = Diagram('diagram_' + str(diagram_count))
             diagram_count += 1
+            diagrams.append(d)
             it = QListWidgetItem(d.name)
             it.setData(Qt.UserRole, d)
             diagram_tree.addItem(it)
@@ -585,7 +770,7 @@ class MainWindow(QMainWindow):
 
         def change_diagram(item):
             diag.diagram = item.data(Qt.UserRole)
-            diag.update()
+            diag.stop_placing()
 
         counter = defaultdict(int)
 
@@ -601,6 +786,8 @@ class MainWindow(QMainWindow):
 
         def add_element(item):
             factory = item.data(0, Qt.UserRole)
+            if factory is None:
+                return
             element = factory()
             diag.start_placing(element)
 
@@ -649,23 +836,20 @@ class MainWindow(QMainWindow):
             if executing:
                 simulate_btn.setText('Start')
                 diag.executor = None
+                diag.redraw_timer.stop()
             else:
                 simulate_btn.setText('Stop')
                 diag.diagram.reconstruct()
                 s = diag.diagram.schematic
                 exe = JIT(s)
                 diag.executor = exe
-                exe.step()
+                diag.redraw_timer.start()
             diag.update()
 
         simulate_btn.clicked.connect(toggle_simulation)
 
-        desc1 = Gate(Gate.AND, num_inputs=3)
-        desc2 = Not()
-        desc3 = ExposedPin(ExposedPin.IN)
-        desc4 = ExposedPin(ExposedPin.OUT)
-
         d = Diagram('main')
+        diagrams.append(d)
         it = QListWidgetItem(d.name)
         it.setData(Qt.ItemDataRole.UserRole, d)
         diagram_tree.addItem(it)
@@ -693,7 +877,6 @@ def run_app():
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 
     app = QApplication(argv)
-    print(app.devicePixelRatio())
     window = MainWindow()
     window.showMaximized()
     return app.exec_()

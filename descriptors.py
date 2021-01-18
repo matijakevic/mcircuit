@@ -64,14 +64,14 @@ class Schematic(Descriptor):
             if not isinstance(child, ExposedPin):
                 continue
             if child.direction == ExposedPin.IN:
-                yield name + '.pin'
+                yield name
 
     def all_outputs(self):
         for name, child in self.children.items():
             if not isinstance(child, ExposedPin):
                 continue
             if child.direction == ExposedPin.OUT:
-                yield name + '.pin'
+                yield name
 
     # Returns a Schematic equivalent which doesn't contain
     # any other Schematic descriptors in its children.

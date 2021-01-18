@@ -82,7 +82,7 @@ def _element_to_dict(element: Element):
     return d
 
 
-def load_diagram(obj):
+def load_project(obj):
     d = json.load(obj)
 
     # version = d['version']
@@ -91,17 +91,11 @@ def load_diagram(obj):
     return root
 
 
-def _diagram_to_dict(diagram: Diagram):
-    d = dict()
-
-    d['elements'] = list(map(_element_to_dict, diagram.elements))
-    diagram.wires
-
-def save_diagram(obj, diagrams):
+def save_project(obj, diagrams):
     d = dict()
 
     d['version'] = VERSION
-    d['diagrams'] = list()
+    dlist = d['diagrams'] = list()
 
     for diagram in diagrams:
         d['schematic'] = _desc_to_dict()

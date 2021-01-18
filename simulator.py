@@ -126,7 +126,7 @@ class JIT(Executor):
             trace = _trace_pin(desc, pin)
             path1 = '.'.join((desc, pin))
             path2 = '.'.join(trace)
-            pins.add((path1, width))
+            pins.add((path2, width))
             self._mapper[path1] = path2
 
         for pin_name, pin_width in pins:
