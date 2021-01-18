@@ -388,11 +388,15 @@ class DiagramEditor(QWidget):
                         if desc.direction == ExposedPin.IN:
                             x, y = element.position
                             xb, yb, w, h = element.bounding_rect
+                            transform = QTransform()
+                            transform.translate(x * gs, y * gs)
+                            transform.rotate(element.facing * -90)
                             state = self.executor.get_pin_state(
                                 element.name + '.pin')
                             for i in range(desc.width):
-                                r = QRect(x * gs + xb * gs + gs / 8 + i * gs, y * gs + yb * gs + h / 8 * gs + h * gs / 8 * 6 / 8,
+                                r = QRect(xb * gs + gs / 8 + i * gs, yb * gs + h / 8 * gs + h * gs / 8 * 6 / 8,
                                           gs / 8 * 6, h * gs / 8 * 6 / 8 * 6)
+                                r = transform.mapRect(r)
                                 if r.contains(d):
                                     state ^= 1 << i
                                     self.executor.set_pin_state(
@@ -485,8 +489,12 @@ class DiagramEditor(QWidget):
             painter.drawPath(path)
         elif isinstance(desc, ExposedPin):
             path = QPainterPath()
-            path.addRect(xb * gs, yb * gs + h / 8 * gs, w * gs,
-                         h * gs / 8 * 6)
+            if desc.direction == ExposedPin.IN:
+                path.addRect(xb * gs, yb * gs + h / 8 * gs, w * gs,
+                             h * gs / 8 * 6)
+            else:
+                path.addRoundedRect(xb * gs, yb * gs + h / 8 * gs, w * gs,
+                                    h * gs / 8 * 6, gs / 4, gs / 4)
             painter.fillPath(path, white)
             painter.setPen(QPen(black, 2.0))
             painter.drawPath(path)
