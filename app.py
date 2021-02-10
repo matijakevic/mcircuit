@@ -262,7 +262,7 @@ class DiagramEditor(QWidget):
         self._state = EditState.NONE
         self.update()
 
-    def element_at_pos(self, pos):
+    def element_at_position(self, pos):
         gs = self.grid_size
 
         for element in self.diagram.elements:
@@ -302,7 +302,7 @@ class DiagramEditor(QWidget):
             return
 
         if self._state == EditState.NONE:
-            selected_element = self.element_at_pos(d)
+            selected_element = self.element_at_position(d)
             if selected_element is not None:
                 self._state = EditState.ELEMENT_CLICK
                 self._selected_element = selected_element
@@ -313,7 +313,7 @@ class DiagramEditor(QWidget):
             self._end = p
             self.update()
         elif self._state == EditState.SELECT:
-            selected_element = self.element_at_pos(d)
+            selected_element = self.element_at_position(d)
             if selected_element is None:
                 self._state = EditState.EMPTY_CLICK
                 self.element_selected.emit(selected_element)
@@ -381,7 +381,7 @@ class DiagramEditor(QWidget):
                 self._translation += self._end - self._start
                 self.update()
             elif self._state == ViewState.CLICK:
-                element = self.element_at_pos(d)
+                element = self.element_at_position(d)
                 if self.executor is not None and element is not None:
                     if isinstance(element.descriptor, ExposedPin):
                         desc = element.descriptor
@@ -436,18 +436,18 @@ class DiagramEditor(QWidget):
             self.update()
 
     def _make_grid(self):
-        pixmap = QPixmap(512, 512)
-        pixmap.setDevicePixelRatio(self.devicePixelRatio())
+        pixmap = QPixmap(self.grid_size * 16, self.grid_size * 16)
         painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.HighQualityAntialiasing)
 
         back_col = QApplication.palette().color(QPalette.Base)
         grid_col = QApplication.palette().color(QPalette.WindowText)
 
         painter.fillRect(pixmap.rect(), back_col)
 
-        painter.setPen(QPen(grid_col, 1))
-        for x in range(self.grid_size // 2, pixmap.width(), self.grid_size):
-            for y in range(self.grid_size // 2, pixmap.height(), self.grid_size):
+        painter.setPen(QPen(grid_col))
+        for x in range(0, pixmap.width(), self.grid_size):
+            for y in range(0, pixmap.height(), self.grid_size):
                 painter.drawPoint(x, y)
 
         return pixmap
@@ -603,7 +603,7 @@ class DiagramEditor(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.HighQualityAntialiasing)
 
         tex_col = QApplication.palette().color(QPalette.WindowText)
         wire_col = tex_col
@@ -619,10 +619,11 @@ class DiagramEditor(QWidget):
         ttrans = trans / gs
         tx, ty = ttrans.x() * gs, ttrans.y() * gs
 
-        painter.translate(trans)
         grid_rect = self.rect().marginsAdded(
-            QMargins(*(gs / 2,) * 4)).translated(-QPoint(tx, ty))
+            QMargins(*(gs,) * 4)).translated(trans-QPoint(tx, ty))
         painter.drawTiledPixmap(grid_rect, self._grid)
+
+        painter.translate(trans)
 
         for element in self.diagram.elements:
             if self._state == EditState.DRAG and self._selected_element is element:
