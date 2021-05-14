@@ -1,10 +1,26 @@
 from copy import deepcopy
 from collections import defaultdict
 
+import networkx as nx
+
 
 class Descriptor:
     def clone(self):
         return deepcopy(self)
+
+    def all_inputs(self):
+        yield from []
+
+    def all_outputs(self):
+        yield from []
+
+    def all_internals(self):
+        yield from []
+
+    def all_pins(self):
+        yield from self.all_inputs()
+        yield from self.all_outputs()
+        yield from self.all_internals()
 
 
 class ExposedPin(Descriptor):
@@ -15,11 +31,35 @@ class ExposedPin(Descriptor):
         self.direction = direction
         self.width = width
 
+    def all_inputs(self):
+        if self.direction == ExposedPin.OUT:
+            yield 'pin', self.width
+
+    def all_outputs(self):
+        if self.direction == ExposedPin.IN:
+            yield 'pin', self.width
+
+
+class Constant(Descriptor):
+    def __init__(self, width=1, value=0):
+        super().__init__()
+        self.width = width
+        self.value = value
+
+    def all_outputs(self):
+        yield 'out', self.width
+
 
 class Not(Descriptor):
     def __init__(self, width=1):
         super().__init__()
         self.width = width
+
+    def all_inputs(self):
+        yield 'in', self.width
+
+    def all_outputs(self):
+        yield 'out', self.width
 
 
 class Gate(Descriptor):
@@ -32,103 +72,110 @@ class Gate(Descriptor):
         self.num_inputs = num_inputs
         self.negated = negated
 
+    def all_inputs(self):
+        yield from map(lambda i: ('in{}'.format(i), self.width), range(self.num_inputs))
+
+    def all_outputs(self):
+        yield 'out', self.width
+
+
+class Register(Descriptor):
+    def __init__(self, width=1):
+        super().__init__()
+        self.width = width
+
+    def all_inputs(self):
+        yield 'clock', 1
+        yield 'data', self.width
+
+    def all_outputs(self):
+        yield 'out', self.width
+
+    def all_internals(self):
+        yield 'prevclock', 1
+
+
+class Counter(Descriptor):
+    def __init__(self, width=1):
+        super().__init__()
+        self.width = width
+
+    def all_inputs(self):
+        yield 'clock', 1
+
+    def all_outputs(self):
+        yield 'out', self.width
+
+    def all_internals(self):
+        yield 'prevclock', 1
+
+
+class Clock(Descriptor):
+    def __init__(self):
+        super().__init__()
+        self.short = 1
+        self.long = 1
+
+    def all_outputs(self):
+        yield 'out', 1
+
+    def all_internals(self):
+        yield 'count', 64
+
+
+class Adder(Descriptor):
+    def __init__(self, width=1):
+        super().__init__()
+        self.width = width
+
+    def all_inputs(self):
+        yield 'cin', 1
+        yield 'a', self.width
+        yield 'b', self.width
+
+    def all_outputs(self):
+        yield 'cout', 1
+        yield 'sum', self.width
+
 
 class Schematic(Descriptor):
     def __init__(self):
         super().__init__()
-        self.children = dict()
+        self.graph = nx.DiGraph()
         self.connections = set()
-        self.desc_conns = defaultdict(set)
 
     def _translate_pin(self, child, pin):
-        if child == '':
-            return pin, 'pin'
-        if isinstance(self.children.get(child), Schematic):
-            return child + '.' + pin, 'pin'
+        desc = self.get_child(child)
+        if isinstance(desc, ExposedPin):
+            return child, 'pin'
+        if isinstance(desc, Schematic):
+            return child + '/' + pin, 'pin'
         return child, pin
 
     def connect(self, child1, pin1, child2, pin2):
+        self.graph.add_edge(child2, child1)
         child1, pin1 = self._translate_pin(child1, pin1)
         child2, pin2 = self._translate_pin(child2, pin2)
         self.connections.add((child1, pin1, child2, pin2))
-        self.desc_conns[child1].add(child2)
 
     def add_child(self, name, descriptor):
-        self.children[name] = descriptor
+        self.graph.add_node(name, descriptor=descriptor, label=name)
 
-    def get_child(self, name):
-        return self.children[name]
+    def get_child(self, name) -> Descriptor:
+        return self.graph.nodes[name]['descriptor']
 
     def all_inputs(self):
-        for name, child in self.children.items():
-            if not isinstance(child, ExposedPin):
+        for name, data in self.graph.nodes.items():
+            desc = data['descriptor']
+            if not isinstance(desc, ExposedPin):
                 continue
-            if child.direction == ExposedPin.IN:
-                yield name
+            if desc.direction == ExposedPin.IN:
+                yield name + '/pin', desc.width
 
     def all_outputs(self):
-        for name, child in self.children.items():
-            if not isinstance(child, ExposedPin):
+        for name, data in self.graph.nodes.items():
+            desc = data['descriptor']
+            if not isinstance(desc, ExposedPin):
                 continue
-            if child.direction == ExposedPin.OUT:
-                yield name
-
-    # Returns a Schematic equivalent which doesn't contain
-    # any other Schematic descriptors in its children.
-
-    def flatten(self):
-        s = Schematic()
-
-        to_expand = [('', self)]
-
-        def make_path(path, name):
-            return (path + '.' + name).lstrip('.')
-
-        while to_expand:
-            path, desc = to_expand.pop()
-
-            for name, child_desc in desc.children.items():
-                child_path = make_path(path, name)
-                if isinstance(child_desc, Schematic):
-                    to_expand.append((child_path, child_desc))
-                else:
-                    s.add_child(child_path, child_desc)
-
-            for conn in desc.connections:
-                s.connect(make_path(path, conn[0]), conn[1],
-                          make_path(path, conn[2]), conn[3])
-
-        return s
-
-    def is_flattened(self):
-        return all(map(lambda desc: not isinstance(desc, Schematic),
-                       self.children.values()))
-
-
-def topology(root):
-    if not isinstance(root, Schematic):
-        raise ValueError('root must be a flattened Schematic descriptor')
-    if not root.is_flattened():
-        raise ValueError('''cannot create a topology for a non-flattened
-Schematic descriptor''')
-
-    visited = set()
-    topo = list()
-
-    def dfs(name):
-        if name in visited:
-            return
-
-        visited.add(name)
-
-        for desc_name in root.desc_conns.get(name, set()):
-            dfs(desc_name)
-
-        topo.append(name)
-
-    for name in root.children:
-        dfs(name)
-
-    topo.reverse()
-
-    return topo
+            if desc.direction == ExposedPin.OUT:
+                yield name + '/pin', desc.width

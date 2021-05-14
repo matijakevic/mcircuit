@@ -1,15 +1,161 @@
 
-from itertools import chain
-from ctypes import CFUNCTYPE, POINTER, cast, addressof, c_ulonglong, windll
+from ctypes import CFUNCTYPE, POINTER, cast, c_ulonglong
+from llvmlite.ir.builder import IRBuilder
+
+import networkx as nx
 
 import llvmlite.ir as ll
 import llvmlite.binding as llvm
 
-from descriptors import ExposedPin, Not, Gate, Schematic, topology
+from descriptors import Adder, Clock, Constant, Not, Gate, Register, Schematic, Counter
 
 llvm.initialize()
 llvm.initialize_native_target()
 llvm.initialize_native_asmprinter()
+
+
+def iter_simulation_pins(node: Schematic, path='/'):
+    for name in node.graph.nodes:
+        desc = node.get_child(name)
+
+        if isinstance(desc, Schematic):
+            yield from iter_simulation_pins(desc, path + name + '/')
+        else:
+            yield from map(lambda p: (path + name + '/' + p[0], p[1], 'in'), desc.all_inputs())
+            yield from map(lambda p: (path + name + '/' + p[0], p[1], 'out'), desc.all_outputs())
+            yield from map(lambda p: (path + name + '/' + p[0], p[1], 'internal'), desc.all_internals())
+
+
+def iter_simulation_connections(node: Schematic, path='/'):
+    for name in nx.dfs_postorder_nodes(node.graph):
+        desc = node.get_child(name)
+
+        if isinstance(desc, Schematic):
+            yield from iter_simulation_connections(desc, path + name + '/')
+
+        for conn in node.connections:
+            if conn[0].split('/')[0] != name:
+                continue
+            yield path + conn[0] + '/' + conn[1], path + conn[2] + '/' + conn[3]
+
+
+def iter_simulation_topology(node: Schematic, path='/'):
+    for name in nx.dfs_postorder_nodes(node.graph):
+        desc = node.get_child(name)
+
+        if isinstance(desc, Schematic):
+            yield from iter_simulation_topology(desc, path + name + '/')
+        else:
+            yield 'emit', (desc, path + name + '/')
+
+        for conn in node.connections:
+            if conn[0].split('/')[0] != name:
+                continue
+            yield 'propagate', (path + conn[0] + '/' + conn[1], path + conn[2] + '/' + conn[3])
+
+
+def _translate_not(b: IRBuilder, desc: Gate, path, get_global):
+    inp = b.load(get_global(path, 'in'))
+    v = b.not_(inp)
+    b.store(v, get_global(path, 'out'))
+
+
+def _translate_gate(b: IRBuilder, desc: Gate, path, get_global):
+    res = None
+    for i in range(desc.num_inputs):
+        v = b.load(get_global(path, 'in' + str(i)))
+        if res is None:
+            res = v
+        elif desc.op == Gate.AND:
+            res = b.and_(res, v)
+        elif desc.op == Gate.OR:
+            res = b.or_(res, v)
+        elif desc.op == Gate.XOR:
+            res = b.xor(res, v)
+    if desc.negated:
+        res = b.not_(res)
+    b.store(res, get_global(path, 'out'))
+
+
+def _map_to_sources(desc: Schematic):
+    conns = dict()
+    for src, dest in iter_simulation_connections(desc):
+        conns[dest] = src
+
+    def _trace_pin(path):
+        curr = path
+        if curr not in conns:
+            return None
+        while curr in conns:
+            curr = conns[curr]
+        return curr
+
+    traces = dict()
+
+    for pin, _, tp in iter_simulation_pins(desc):
+        traces[pin] = _trace_pin(pin)
+
+    return traces
+
+
+def _translate_counter(b: IRBuilder, desc: Counter, path, get_global):
+    prevclk = get_global(path, 'prevclock')
+    out = get_global(path, 'out')
+    clk = get_global(path, 'clock')
+
+    itype = ll.IntType(desc.width)
+    v1 = b.load(prevclk)
+    v2 = b.load(clk)
+    v3 = b.zext(b.and_(b.not_(v1), v2), itype)
+
+    b.store(b.or_(b.and_(v3, b.add(b.load(out), ll.Constant(itype, 1))),
+            b.and_(b.not_(v3), b.load(out))), out)
+    b.store(b.load(clk), prevclk)
+
+
+def _translate_register(b: IRBuilder, desc: Counter, path, get_global):
+    prevclk = get_global(path, 'prevclock')
+    data = get_global(path, 'data')
+    out = get_global(path, 'out')
+    clk = get_global(path, 'clock')
+
+    v1 = b.load(prevclk)
+    v2 = b.load(clk)
+    v3 = b.and_(b.not_(v1), v2)
+
+    b.store(b.or_(b.and_(v3, b.load(data)),
+            b.and_(b.not_(v3), out)), out)
+    b.store(b.load(clk), prevclk)
+
+
+def _translate_clock(b: IRBuilder, desc: Clock, path, get_global):
+    out = get_global(path, 'out')
+    b.store(b.not_(b.load(out)), out)
+
+
+def _translate_adder(b: IRBuilder, desc: Adder, path, get_global):
+    a_ = get_global(path, 'a')
+    b_ = get_global(path, 'b')
+    cin = get_global(path, 'cin')
+    sum_ = get_global(path, 'sum')
+    cout = get_global(path, 'cout')
+
+    s1 = b.sadd_with_overflow(b.load(a_), b.load(b_))
+    s2 = b.sadd_with_overflow(
+        b.extract_value(s1, 0), b.zext(b.load(cin), ll.IntType(desc.width)))
+    b.store(b.extract_value(s2, 0), sum_)
+    b.store(b.or_(b.extract_value(s1, 1),
+            b.extract_value(s2, 1)), cout)
+
+
+TRANSLATOR = {
+    Gate: _translate_gate,
+    Adder: _translate_adder,
+    Clock: _translate_clock,
+    Not: _translate_not,
+    Register: _translate_register,
+    Counter: _translate_counter
+}
 
 
 class Executor:
@@ -26,115 +172,24 @@ class Executor:
         raise NotImplementedError
 
 
-class Interpreter(Executor):
-    def __init__(self, root: Schematic):
-        self.states = dict()
-        self._flat = root.flatten()
-        self._topo = topology(self._flat)
-
-        self._initialize()
-
-    def _initialize(self):
-        for name, desc in self._flat.children.items():
-            if isinstance(desc, Gate):
-                self.states[name + '.out'] = 0
-                for i in range(desc.num_inputs):
-                    self.states[name + '.in' + str(i)] = 0
-            elif isinstance(desc, Not):
-                self.states[name + '.in'] = 0
-                self.states[name + '.out'] = 0
-            elif isinstance(desc, ExposedPin):
-                self.states[name + '.pin'] = 0
-
-    def get_pin_state(self, pin):
-        return self.states[pin]
-
-    def set_pin_state(self, pin, value):
-        self.states[pin] = value
-
-    def step(self):
-        for name in self._topo:
-            desc = self._flat.children[name]
-            if isinstance(desc, Gate):
-                MASK = (1 << desc.width) - 1
-
-                if desc.op == Gate.AND:
-                    val = MASK
-                else:
-                    val = 0
-
-                for i in range(desc.num_inputs):
-                    input_state = self.states[name + '.in' + str(i)]
-                    if desc.op == Gate.AND:
-                        val &= input_state
-                    elif desc.op == Gate.OR:
-                        val |= input_state
-                    else:
-                        val ^= input_state
-
-                if desc.negated:
-                    val ^= MASK
-
-                self.states[name + '.out'] = val
-            elif isinstance(desc, Not):
-                MASK = (1 << desc.width) - 1
-                self.states[name + '.out'] = self.states[name + '.in'] ^ MASK
-
-            for desc1, pin1, desc2, pin2 in self._flat.connections:
-                if desc1 != name:
-                    continue
-                self.states[desc2 + '.' +
-                            pin2] = self.states[desc1 + '.' + pin1]
-
-    def burst(self):
-        for _ in range(1000):
-            self.step()
-
-
 class JIT(Executor):
-    def __init__(self, root: Schematic, burst_size=1001):
+    def __init__(self, root: Schematic, burst_size, map_pins):
         self.root = root
-        self._burst_size = burst_size
-        self._flat = root.flatten()
-        self._topo = topology(self._flat)
 
         mod = self._module = ll.Module()
 
-        all_pins = set()
+        if map_pins:
+            self._pin_map = _map_to_sources(root)
+        else:
+            self._pin_map = None
 
-        for name, desc in self._flat.children.items():
-            if isinstance(desc, Gate):
-                all_pins.add((name, 'out', desc.width))
-                for i in range(desc.num_inputs):
-                    all_pins.add((name, 'in' + str(i), desc.width))
-            elif isinstance(desc, Not):
-                all_pins.add((name, 'in', desc.width))
-                all_pins.add((name, 'out', desc.width))
-            elif isinstance(desc, ExposedPin):
-                all_pins.add((name, 'pin', desc.width))
-
-        self._mapper = dict()
-        pins = set()
-
-        def _trace_pin(desc, pin):
-            for desc1, pin1, desc2, pin2 in self._flat.connections:
-                if desc2 == desc and pin2 == pin:
-                    return _trace_pin(desc1, pin1)
-            return desc, pin
-
-        for desc, pin, width in all_pins:
-            trace = _trace_pin(desc, pin)
-            path1 = '.'.join((desc, pin))
-            path2 = '.'.join(trace)
-            pins.add((path2, width))
-            self._mapper[path1] = path2
-
-        for pin_name, pin_width in pins:
+        for pin_path, pin_width, tp in iter_simulation_pins(root):
+            if map_pins and self._pin_map[pin_path] is not None:
+                continue
             pin_type = ll.IntType(pin_width)
-            var = ll.GlobalVariable(mod, pin_type, pin_name)
-            var.align = 8
+            var = ll.GlobalVariable(mod, pin_type, pin_path)
             var.initializer = ll.Constant(pin_type, 0)
-            var.storage_class = 'dllexport'
+            var.align = 8
 
         int_type = ll.IntType(64)
 
@@ -144,36 +199,27 @@ class JIT(Executor):
         b_entry = step_func.append_basic_block()
         b = ll.IRBuilder(b_entry)
 
-        def get_global(path, pin):
-            return mod.get_global(self._mapper[path + '.' + pin])
+        constants = list()
 
-        for name in self._topo:
-            desc = self._flat.children[name]
-            if isinstance(desc, Not):
-                inp = b.load(get_global(name, 'in'))
-                v = b.not_(inp)
-                b.store(v, get_global(name, 'out'))
-            elif isinstance(desc, Gate):
-                res = None
-                for i in range(desc.num_inputs):
-                    v = b.load(get_global(name, 'in' + str(i)))
-                    if res is None:
-                        res = v
-                    elif desc.op == Gate.AND:
-                        res = b.and_(res, v)
-                    elif desc.op == Gate.OR:
-                        res = b.or_(res, v)
-                    elif desc.op == Gate.XOR:
-                        res = b.xor(res, v)
-                if desc.negated:
-                    res = b.not_(res)
-                b.store(res, get_global(name, 'out'))
+        def get_global_at(path):
+            return mod.get_global(self._get_source_path(path))
 
-            for desc1, pin1, desc2, pin2 in self._flat.connections:
-                if desc1 != name:
-                    continue
-                v = b.load(get_global(desc1, pin1))
-                b.store(v, get_global(desc2, pin2))
+        def get_global(desc, pin):
+            return get_global_at(desc + pin)
+
+        for op, data in iter_simulation_topology(root):
+            if op == 'propagate':
+                path1, path2 = data
+                v = b.load(get_global_at(path1))
+                b.store(v, get_global_at(path2))
+            else:
+                desc = data[0]
+                path = data[1]
+                tp = type(desc)
+                if tp in TRANSLATOR:
+                    TRANSLATOR[tp](b, desc, path, get_global)
+                elif tp is Constant:
+                    constants.append(data)
 
         b.ret_void()
 
@@ -193,7 +239,7 @@ class JIT(Executor):
         cnt = b.load(cnt_p)
         v = b.sub(cnt, ll.Constant(int_type, 1))
         b.store(v, cnt_p)
-        cond = b.icmp_unsigned('==', cnt, ll.Constant(int_type, 0))
+        cond = b.icmp_unsigned('!=', cnt, ll.Constant(int_type, 0))
         b.cbranch(cond, b_loop, b_exit)
 
         b.position_at_end(b_exit)
@@ -201,35 +247,46 @@ class JIT(Executor):
 
         llmod = self._llmod = llvm.parse_assembly(str(mod))
 
+        #print(str(mod), file=open('out.txt', 'w'))
+
         pmb = llvm.create_pass_manager_builder()
-        pmb.opt_level = 3
-        pmb.inlining_threshold = 1
         pm = llvm.create_module_pass_manager()
         pmb.populate(pm)
         pm.run(llmod)
 
-        # print(llmod)
+        # print(llmod,
+        #       file=open('out.txt', 'w'), flush=True)
 
         self._machine = llvm.Target.from_default_triple().create_target_machine()
 
         self._ee = llvm.create_mcjit_compiler(llmod, self._machine)
         self._ee.finalize_object()
+
+        print(self._machine.emit_assembly(llmod),
+              file=open('out.txt', 'w'), flush=True)
+
         ptr = self._ee.get_function_address('step')
         self._step_func = CFUNCTYPE(None)(ptr)
 
         ptr = self._ee.get_function_address('burst')
         self._burst_func = CFUNCTYPE(None)(ptr)
 
-    @ property
-    def burst_size(self):
-        return self._burst_size
+        for desc, path in constants:
+            self.set_pin_state(path + 'out', desc.value)
+
+    def _get_source_path(self, path):
+        if self._pin_map is None:
+            return path
+        if self._pin_map[path] is None:
+            return path
+        return self._pin_map[path]
 
     def get_pin_state(self, pin):
-        ptr = self._ee.get_global_value_address(self._mapper[pin])
+        ptr = self._ee.get_global_value_address(self._get_source_path(pin))
         return cast(ptr, POINTER(c_ulonglong))[0]
 
     def set_pin_state(self, pin, value):
-        ptr = self._ee.get_global_value_address(self._mapper[pin])
+        ptr = self._ee.get_global_value_address(self._get_source_path(pin))
         cast(ptr, POINTER(c_ulonglong))[0] = value
 
     def step(self):
