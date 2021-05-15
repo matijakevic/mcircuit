@@ -73,7 +73,7 @@ class Gate(Descriptor):
         self.negated = negated
 
     def all_inputs(self):
-        yield from map(lambda i: ('in{}'.format(i), self.width), range(self.num_inputs))
+        yield from map(lambda i: (f'in{i}', self.width), range(self.num_inputs))
 
     def all_outputs(self):
         yield 'out', self.width

@@ -250,6 +250,8 @@ class JIT(Executor):
         #print(str(mod), file=open('out.txt', 'w'))
 
         pmb = llvm.create_pass_manager_builder()
+        pmb.inlining_threshold = 10000000
+        pmb.opt_level = 3
         pm = llvm.create_module_pass_manager()
         pmb.populate(pm)
         pm.run(llmod)
@@ -257,7 +259,7 @@ class JIT(Executor):
         # print(llmod,
         #       file=open('out.txt', 'w'), flush=True)
 
-        self._machine = llvm.Target.from_default_triple().create_target_machine()
+        self._machine = llvm.Target.from_default_triple().create_target_machine(opt=3)
 
         self._ee = llvm.create_mcjit_compiler(llmod, self._machine)
         self._ee.finalize_object()
