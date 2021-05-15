@@ -1,8 +1,8 @@
 from time import time
-from descriptors import Clock, Schematic, Counter
-from simulator import JIT
+from core.descriptors import Clock, Composite, Counter
+from core.simulator import JIT
 
-s = Schematic()
+s = Composite()
 counter = Counter(16)
 clock = Clock()
 
@@ -13,7 +13,7 @@ s.connect('clk', 'out', 'r', 'clock')
 
 
 burst_size = 501
-sim = JIT(s, burst_size, False)
+sim = JIT(s, burst_size, True)
 
 N = 1000
 iters = N * burst_size

@@ -1,16 +1,16 @@
-from diagram import Diagram, Element
+from diagram import Schematic, Element
 import json
 from bidict import bidict
 
 from version import VERSION
 
-from descriptors import ExposedPin, Gate, Not, Schematic
+from descriptors import ExposedPin, Gate, Not, Composite
 
 
 _DESC_TO_NAME = bidict({
     Not: 'not',
     Gate: 'gate',
-    Schematic: 'schematic',
+    Composite: 'schematic',
     ExposedPin: 'exposed_pin'
 })
 
@@ -33,7 +33,7 @@ def _desc_to_dict(desc):
         d['width'] = desc.width
         d['negated'] = desc.negated
         d['op'] = _OP_TO_NAME[desc.op]
-    elif isinstance(desc, Schematic):
+    elif isinstance(desc, Composite):
         d['children'] = dict(map(lambda t: (
             t[0], _desc_to_dict(t[1])), desc.children.items()))
         d['connections'] = list(map(list, desc.connections))
@@ -51,8 +51,8 @@ def _dict_to_desc(d):
         return Not(d['width'])
     elif type is Gate:
         return Gate(_OP_TO_NAME.inverse[d['op']], d['width'], d['num_inputs'], d['negated'])
-    elif type is Schematic:
-        s = Schematic()
+    elif type is Composite:
+        s = Composite()
         for name, child in d['children'].items():
             s.add_child(name, _dict_to_desc(child))
         for conn in d['connections']:

@@ -1,24 +1,23 @@
 
 from ctypes import CFUNCTYPE, POINTER, cast, c_ulonglong
-from llvmlite.ir.builder import IRBuilder
 
 import networkx as nx
 
 import llvmlite.ir as ll
 import llvmlite.binding as llvm
 
-from descriptors import Adder, Clock, Constant, Not, Gate, Register, Schematic, Counter
+from .descriptors import Adder, Clock, Constant, Not, Gate, Register, Composite, Counter
 
 llvm.initialize()
 llvm.initialize_native_target()
 llvm.initialize_native_asmprinter()
 
 
-def iter_simulation_pins(node: Schematic, path='/'):
+def iter_simulation_pins(node: Composite, path='/'):
     for name in node.graph.nodes:
         desc = node.get_child(name)
 
-        if isinstance(desc, Schematic):
+        if isinstance(desc, Composite):
             yield from iter_simulation_pins(desc, path + name + '/')
         else:
             yield from map(lambda p: (path + name + '/' + p[0], p[1], 'in'), desc.all_inputs())
@@ -26,11 +25,11 @@ def iter_simulation_pins(node: Schematic, path='/'):
             yield from map(lambda p: (path + name + '/' + p[0], p[1], 'internal'), desc.all_internals())
 
 
-def iter_simulation_connections(node: Schematic, path='/'):
-    for name in nx.dfs_postorder_nodes(node.graph):
+def iter_simulation_connections(node: Composite, path='/'):
+    for name in node.graph.nodes:
         desc = node.get_child(name)
 
-        if isinstance(desc, Schematic):
+        if isinstance(desc, Composite):
             yield from iter_simulation_connections(desc, path + name + '/')
 
         for conn in node.connections:
@@ -39,11 +38,11 @@ def iter_simulation_connections(node: Schematic, path='/'):
             yield path + conn[0] + '/' + conn[1], path + conn[2] + '/' + conn[3]
 
 
-def iter_simulation_topology(node: Schematic, path='/'):
+def iter_simulation_topology(node: Composite, path='/'):
     for name in nx.dfs_postorder_nodes(node.graph):
         desc = node.get_child(name)
 
-        if isinstance(desc, Schematic):
+        if isinstance(desc, Composite):
             yield from iter_simulation_topology(desc, path + name + '/')
         else:
             yield 'emit', (desc, path + name + '/')
@@ -54,13 +53,34 @@ def iter_simulation_topology(node: Schematic, path='/'):
             yield 'propagate', (path + conn[0] + '/' + conn[1], path + conn[2] + '/' + conn[3])
 
 
-def _translate_not(b: IRBuilder, desc: Gate, path, get_global):
+def _map_to_sources(desc: Composite):
+    conns = dict()
+    for src, dest in iter_simulation_connections(desc):
+        conns[dest] = src
+
+    def _trace_pin(path):
+        curr = path
+        if curr not in conns:
+            return None
+        while curr in conns:
+            curr = conns[curr]
+        return curr
+
+    traces = dict()
+
+    for pin, _, _ in iter_simulation_pins(desc):
+        traces[pin] = _trace_pin(pin)
+
+    return traces
+
+
+def _translate_not(b: ll.IRBuilder, desc: Gate, path, get_global):
     inp = b.load(get_global(path, 'in'))
     v = b.not_(inp)
     b.store(v, get_global(path, 'out'))
 
 
-def _translate_gate(b: IRBuilder, desc: Gate, path, get_global):
+def _translate_gate(b: ll.IRBuilder, desc: Gate, path, get_global):
     res = None
     for i in range(desc.num_inputs):
         v = b.load(get_global(path, 'in' + str(i)))
@@ -77,28 +97,7 @@ def _translate_gate(b: IRBuilder, desc: Gate, path, get_global):
     b.store(res, get_global(path, 'out'))
 
 
-def _map_to_sources(desc: Schematic):
-    conns = dict()
-    for src, dest in iter_simulation_connections(desc):
-        conns[dest] = src
-
-    def _trace_pin(path):
-        curr = path
-        if curr not in conns:
-            return None
-        while curr in conns:
-            curr = conns[curr]
-        return curr
-
-    traces = dict()
-
-    for pin, _, tp in iter_simulation_pins(desc):
-        traces[pin] = _trace_pin(pin)
-
-    return traces
-
-
-def _translate_counter(b: IRBuilder, desc: Counter, path, get_global):
+def _translate_counter(b: ll.IRBuilder, desc: Counter, path, get_global):
     prevclk = get_global(path, 'prevclock')
     out = get_global(path, 'out')
     clk = get_global(path, 'clock')
@@ -113,7 +112,7 @@ def _translate_counter(b: IRBuilder, desc: Counter, path, get_global):
     b.store(b.load(clk), prevclk)
 
 
-def _translate_register(b: IRBuilder, desc: Counter, path, get_global):
+def _translate_register(b: ll.IRBuilder, desc: Counter, path, get_global):
     prevclk = get_global(path, 'prevclock')
     data = get_global(path, 'data')
     out = get_global(path, 'out')
@@ -128,12 +127,12 @@ def _translate_register(b: IRBuilder, desc: Counter, path, get_global):
     b.store(b.load(clk), prevclk)
 
 
-def _translate_clock(b: IRBuilder, desc: Clock, path, get_global):
+def _translate_clock(b: ll.IRBuilder, desc: Clock, path, get_global):
     out = get_global(path, 'out')
     b.store(b.not_(b.load(out)), out)
 
 
-def _translate_adder(b: IRBuilder, desc: Adder, path, get_global):
+def _translate_adder(b: ll.IRBuilder, desc: Adder, path, get_global):
     a_ = get_global(path, 'a')
     b_ = get_global(path, 'b')
     cin = get_global(path, 'cin')
@@ -173,7 +172,7 @@ class Executor:
 
 
 class JIT(Executor):
-    def __init__(self, root: Schematic, burst_size, map_pins):
+    def __init__(self, root: Composite, burst_size, map_pins):
         self.root = root
 
         mod = self._module = ll.Module()

@@ -1,5 +1,4 @@
 from copy import deepcopy
-from collections import defaultdict
 
 import networkx as nx
 
@@ -138,7 +137,7 @@ class Adder(Descriptor):
         yield 'sum', self.width
 
 
-class Schematic(Descriptor):
+class Composite(Descriptor):
     def __init__(self):
         super().__init__()
         self.graph = nx.DiGraph()
@@ -148,7 +147,7 @@ class Schematic(Descriptor):
         desc = self.get_child(child)
         if isinstance(desc, ExposedPin):
             return child, 'pin'
-        if isinstance(desc, Schematic):
+        if isinstance(desc, Composite):
             return child + '/' + pin, 'pin'
         return child, pin
 
@@ -170,7 +169,7 @@ class Schematic(Descriptor):
             if not isinstance(desc, ExposedPin):
                 continue
             if desc.direction == ExposedPin.IN:
-                yield name + '/pin', desc.width
+                yield name, desc.width
 
     def all_outputs(self):
         for name, data in self.graph.nodes.items():
@@ -178,4 +177,4 @@ class Schematic(Descriptor):
             if not isinstance(desc, ExposedPin):
                 continue
             if desc.direction == ExposedPin.OUT:
-                yield name + '/pin', desc.width
+                yield name, desc.width

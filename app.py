@@ -2,17 +2,16 @@ from collections import defaultdict
 from itertools import chain
 from enum import Enum
 
-from simulator import JIT
-from PySide2.QtCore import QCoreApplication, QLine, QLineF, QMargins, QPoint, QRect, QTime, QTimer, Qt, Signal
-from PySide2.QtGui import QColor, QKeySequence, QMouseEvent, QPainter, QPainterPath, QPalette, QPen, QScreen, QStandardItem, QStandardItemModel, QTransform, QVector2D, QPixmap, QGuiApplication
-from diagram import Diagram, EAST, Element, NORTH, SOUTH, WEST, rotate
-from descriptors import Descriptor, ExposedPin, Gate, Not, Schematic
+from core.simulator import JIT
+from PySide6.QtWidgets import *
+from PySide6.QtCore import *
+from PySide6.QtGui import *
+from diagram import Schematic, EAST, Element, NORTH, SOUTH, WEST, rotate
+from core.descriptors import ExposedPin, Gate, Not, Composite
 
 from version import format_version
 
 import pickle
-
-from PySide2.QtWidgets import QCheckBox, QComboBox, QCommonStyle, QDockWidget, QFileDialog, QFormLayout, QLineEdit, QListView, QListWidget, QListWidgetItem, QMainWindow, QApplication, QMenu, QMenuBar, QPushButton, QSpinBox, QStyle, QStyleFactory, QToolBar, QTreeView, QTreeWidget, QTreeWidgetItem, QWidget, QAction, QShortcut
 
 
 def make_line_edit(desc, attribute, callback=None):
@@ -186,7 +185,7 @@ class DiagramEditor(QWidget):
         self.redraw_timer.setInterval(1000 / 65)
 
         def do_stuff():
-            self.executor.burst()
+            self.executor.step()
             self.update()
 
         self.redraw_timer.timeout.connect(do_stuff)
@@ -392,7 +391,7 @@ class DiagramEditor(QWidget):
                             transform.translate(x * gs, y * gs)
                             transform.rotate(element.facing * -90)
                             state = self.executor.get_pin_state(
-                                element.name + '.pin')
+                                '/' + element.name + '/pin')
                             for i in range(desc.width):
                                 r = QRect(xb * gs + gs / 8 + i * gs, yb * gs + h / 8 * gs + h * gs / 8 * 6 / 8,
                                           gs / 8 * 6, h * gs / 8 * 6 / 8 * 6)
@@ -400,7 +399,7 @@ class DiagramEditor(QWidget):
                                 if r.contains(d):
                                     state ^= 1 << i
                                     self.executor.set_pin_state(
-                                        element.name + '.pin', state)
+                                        '/' + element.name + '/pin', state)
                                     break
                 self._state = ViewState.NONE
                 self.update()
@@ -438,7 +437,7 @@ class DiagramEditor(QWidget):
     def _make_grid(self):
         pixmap = QPixmap(self.grid_size * 16, self.grid_size * 16)
         painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.HighQualityAntialiasing)
+        painter.setRenderHint(QPainter.Antialiasing)
 
         back_col = QApplication.palette().color(QPalette.Base)
         grid_col = QApplication.palette().color(QPalette.WindowText)
@@ -502,7 +501,8 @@ class DiagramEditor(QWidget):
             if self.executor is None:
                 state = None
             else:
-                state = self.executor.get_pin_state(element.name + '.pin')
+                state = self.executor.get_pin_state(
+                    '/' + element.name + '/pin')
 
             painter.setPen(QPen(Qt.black))
 
@@ -585,10 +585,10 @@ class DiagramEditor(QWidget):
                                    element.all_outputs()):
                 state = -1
                 if self.executor is not None:
-                    if isinstance(element.descriptor, Schematic):
-                        path = element.name + '.' + name + '.pin'
+                    if isinstance(element.descriptor, Composite):
+                        path = '/' + element.name + '/' + name + '/pin'
                     else:
-                        path = element.name + '.' + name
+                        path = '/' + element.name + '/' + name
                     state = self.executor.get_pin_state(path)
                 if state == -1:
                     painter.setPen(QPen(Qt.blue, 6.0))
@@ -603,7 +603,7 @@ class DiagramEditor(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.HighQualityAntialiasing)
+        painter.setRenderHint(QPainter.Antialiasing)
 
         tex_col = QApplication.palette().color(QPalette.WindowText)
         wire_col = tex_col
@@ -728,7 +728,7 @@ class MainWindow(QMainWindow):
 
         def open_project():
             nonlocal diagrams, diagram_count
-            diag.diagram = Diagram('')
+            diag.diagram = Schematic('')
             diagram_tree.clear()
             f = QFileDialog.getOpenFileName(self, 'Open Project')[0]
             with open(f, 'rb') as file:
@@ -763,7 +763,7 @@ class MainWindow(QMainWindow):
 
         def new_diagram():
             nonlocal diagram_count
-            d = Diagram('diagram_' + str(diagram_count))
+            d = Schematic('diagram_' + str(diagram_count))
             diagram_count += 1
             diagrams.append(d)
             it = QListWidgetItem(d.name)
@@ -788,9 +788,9 @@ class MainWindow(QMainWindow):
             diagram = item.data(Qt.UserRole)
             base_name = item.text()
             counter[base_name] += 1
-            schematic = diagram.schematic
+            composite = diagram.composite
             element = Element(base_name + '_' +
-                              str(counter[base_name]), schematic)
+                              str(counter[base_name]), composite)
             diag.start_placing(element)
 
         def add_element(item):
@@ -849,15 +849,15 @@ class MainWindow(QMainWindow):
             else:
                 simulate_btn.setText('Stop')
                 diag.diagram.reconstruct()
-                s = diag.diagram.schematic
-                exe = JIT(s)
+                s = diag.diagram.composite
+                exe = JIT(s, 500, True)
                 diag.executor = exe
                 diag.redraw_timer.start()
             diag.update()
 
         simulate_btn.clicked.connect(toggle_simulation)
 
-        d = Diagram('main')
+        d = Schematic('main')
         diagrams.append(d)
         it = QListWidgetItem(d.name)
         it.setData(Qt.ItemDataRole.UserRole, d)
@@ -881,11 +881,7 @@ class MainWindow(QMainWindow):
 def run_app():
     from sys import argv
 
-    QGuiApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
-    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
-        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
-
     app = QApplication(argv)
     window = MainWindow()
-    window.showMaximized()
+    window.show()
     return app.exec_()

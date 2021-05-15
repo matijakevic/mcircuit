@@ -1,6 +1,6 @@
 from time import time
-from descriptors import Constant, Gate, Schematic, ExposedPin, Not
-from simulator import JIT
+from core.descriptors import Constant, Gate, Composite, ExposedPin, Not
+from core.simulator import JIT
 
 ein = ExposedPin(ExposedPin.IN)
 eout = ExposedPin(ExposedPin.OUT)
@@ -12,7 +12,7 @@ not_ = Not()
 c = Constant(1, 0)
 
 
-zbrajalo = Schematic()
+zbrajalo = Composite()
 zbrajalo.add_child('a', ein)
 zbrajalo.add_child('b', ein)
 zbrajalo.add_child('cin', ein)
@@ -38,14 +38,14 @@ zbrajalo.connect('and1', 'out', 'or1', 'in0')
 zbrajalo.connect('and2', 'out', 'or1', 'in1')
 zbrajalo.connect('or1', 'out', 'cout', '')
 
-takt = Schematic()
+takt = Composite()
 takt.add_child('not', not_)
 takt.add_child('out', eout)
 takt.connect('not', 'out', 'not', 'in')
 takt.connect('not', 'out', 'out', '')
 
 
-srlatch = Schematic()
+srlatch = Composite()
 srlatch.add_child('nor1', nor)
 srlatch.add_child('nor2', nor)
 srlatch.add_child('s', ein)
@@ -58,7 +58,7 @@ srlatch.connect('r', '', 'nor1', 'in0')
 srlatch.connect('nor1', 'out', 'q', '')
 
 
-dlatch = Schematic()
+dlatch = Composite()
 dlatch.add_child('sr', srlatch)
 dlatch.add_child('and1', and_)
 dlatch.add_child('and2', and_)
@@ -76,7 +76,7 @@ dlatch.connect('and1', 'out', 'sr', 'r')
 dlatch.connect('and2', 'out', 'sr', 's')
 dlatch.connect('sr', 'q', 'q', '')
 
-bistabil = Schematic()
+bistabil = Composite()
 bistabil.add_child('clk', ein)
 bistabil.add_child('d', ein)
 bistabil.add_child('q', eout)
@@ -92,7 +92,7 @@ bistabil.connect('dl2', 'q', 'q', '')
 
 
 bits = 8
-main = Schematic()
+main = Composite()
 main.add_child('clk', takt)
 main.add_child('zero', c)
 visible = set()

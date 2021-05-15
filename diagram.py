@@ -1,7 +1,7 @@
 from collections import defaultdict
 from copy import deepcopy
 
-from descriptors import ExposedPin, Gate, Not, Schematic, topology
+from core.descriptors import ExposedPin, Gate, Not, Composite
 
 
 EAST, NORTH, WEST, SOUTH = range(4)
@@ -39,7 +39,7 @@ class Element:
                 return 0, -1, desc.width, 2
             else:
                 return -desc.width, -1, desc.width, 2
-        elif isinstance(desc, Schematic):
+        elif isinstance(desc, Composite):
             num_inputs = len(tuple(desc.all_inputs()))
             num_outputs = len(tuple(desc.all_outputs()))
             h = max(num_inputs, num_outputs) + 1
@@ -62,9 +62,9 @@ class Element:
                 index += 1
         elif isinstance(desc, ExposedPin) and desc.direction == ExposedPin.OUT:
             yield (0, 0), 'pin'
-        elif isinstance(desc, Schematic):
+        elif isinstance(desc, Composite):
             for i, name in enumerate(desc.all_inputs()):
-                yield (0, i + 1), name
+                yield (0, i + 1), name[0]
 
     def all_outputs(self):
         desc = self.descriptor
@@ -75,10 +75,10 @@ class Element:
             yield (0, 0), 'out'
         elif isinstance(desc, ExposedPin) and desc.direction == ExposedPin.IN:
             yield (0, 0), 'pin'
-        elif isinstance(desc, Schematic):
+        elif isinstance(desc, Composite):
             bb = self.bounding_rect
             for i, name in enumerate(desc.all_outputs()):
-                yield (bb[2], i + 1), name
+                yield (bb[2], i + 1), name[0]
 
 
 class WireNode:
@@ -90,19 +90,15 @@ class WireNode:
         return all(self.connections)
 
 
-class Diagram:
+class Schematic:
     def __init__(self, name):
         self.name = name
         self.elements = list()
         self.wires = defaultdict(WireNode)
-        self.schematic = Schematic()
+        self.composite = Composite()
 
     def reconstruct(self):
-        s = self.schematic
-
-        self.schematic.children.clear()
-        self.schematic.connections.clear()
-        self.schematic.desc_conns.clear()
+        s = self.composite = Composite()
 
         sources = list()
         dests = list()
