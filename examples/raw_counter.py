@@ -1,3 +1,4 @@
+import random
 from time import time
 from core.descriptors import Constant, Gate, Composite, ExposedPin, Not
 from core.simulator import JIT
@@ -12,37 +13,37 @@ not_ = Not()
 c = Constant(1, 0)
 
 
-zbrajalo = Composite()
-zbrajalo.add_child('a', ein)
-zbrajalo.add_child('b', ein)
-zbrajalo.add_child('cin', ein)
-zbrajalo.add_child('s', eout)
-zbrajalo.add_child('cout', eout)
+adder = Composite()
+adder.add_child('a', ein)
+adder.add_child('b', ein)
+adder.add_child('cin', ein)
+adder.add_child('s', eout)
+adder.add_child('cout', eout)
 
-zbrajalo.add_child('xor1', xor_)
-zbrajalo.add_child('xor2', xor_)
-zbrajalo.add_child('and1', and_)
-zbrajalo.add_child('and2', and_)
-zbrajalo.add_child('or1', or_)
+adder.add_child('xor1', xor_)
+adder.add_child('xor2', xor_)
+adder.add_child('and1', and_)
+adder.add_child('and2', and_)
+adder.add_child('or1', or_)
 
-zbrajalo.connect('a', '', 'xor1', 'in0')
-zbrajalo.connect('b', '', 'xor1', 'in1')
-zbrajalo.connect('xor1', 'out', 'xor2', 'in0')
-zbrajalo.connect('cin', '', 'xor2', 'in1')
-zbrajalo.connect('xor2', 'out', 's', '')
-zbrajalo.connect('a', '', 'and2', 'in0')
-zbrajalo.connect('b', '', 'and2', 'in1')
-zbrajalo.connect('xor1', 'out', 'and1', 'in0')
-zbrajalo.connect('cin', '', 'and1', 'in1')
-zbrajalo.connect('and1', 'out', 'or1', 'in0')
-zbrajalo.connect('and2', 'out', 'or1', 'in1')
-zbrajalo.connect('or1', 'out', 'cout', '')
+adder.connect('a', '', 'xor1', 'in0')
+adder.connect('b', '', 'xor1', 'in1')
+adder.connect('xor1', 'out', 'xor2', 'in0')
+adder.connect('cin', '', 'xor2', 'in1')
+adder.connect('xor2', 'out', 's', '')
+adder.connect('a', '', 'and2', 'in0')
+adder.connect('b', '', 'and2', 'in1')
+adder.connect('xor1', 'out', 'and1', 'in0')
+adder.connect('cin', '', 'and1', 'in1')
+adder.connect('and1', 'out', 'or1', 'in0')
+adder.connect('and2', 'out', 'or1', 'in1')
+adder.connect('or1', 'out', 'cout', '')
 
-takt = Composite()
-takt.add_child('not', not_)
-takt.add_child('out', eout)
-takt.connect('not', 'out', 'not', 'in')
-takt.connect('not', 'out', 'out', '')
+clock = Composite()
+clock.add_child('not', not_)
+clock.add_child('out', eout)
+clock.connect('not', 'out', 'not', 'in')
+clock.connect('not', 'out', 'out', '')
 
 
 srlatch = Composite()
@@ -76,40 +77,45 @@ dlatch.connect('and1', 'out', 'sr', 'r')
 dlatch.connect('and2', 'out', 'sr', 's')
 dlatch.connect('sr', 'q', 'q', '')
 
-bistabil = Composite()
-bistabil.add_child('clk', ein)
-bistabil.add_child('d', ein)
-bistabil.add_child('q', eout)
-bistabil.add_child('not', not_)
-bistabil.add_child('dl1', dlatch)
-bistabil.add_child('dl2', dlatch)
-bistabil.connect('clk', '', 'dl2', 'clk')
-bistabil.connect('clk', '', 'not', 'in')
-bistabil.connect('not', 'out', 'dl1', 'clk')
-bistabil.connect('dl1', 'q', 'dl2', 'd')
-bistabil.connect('d', '', 'dl1', 'd')
-bistabil.connect('dl2', 'q', 'q', '')
+latch = Composite()
+latch.add_child('clk', ein)
+latch.add_child('d', ein)
+latch.add_child('q', eout)
+latch.add_child('not', not_)
+latch.add_child('dl1', dlatch)
+latch.add_child('dl2', dlatch)
+latch.connect('clk', '', 'dl2', 'clk')
+latch.connect('clk', '', 'not', 'in')
+latch.connect('not', 'out', 'dl1', 'clk')
+latch.connect('dl1', 'q', 'dl2', 'd')
+latch.connect('d', '', 'dl1', 'd')
+latch.connect('dl2', 'q', 'q', '')
 
 
-bits = 8
+bits = 2
 main = Composite()
-main.add_child('clk', takt)
-main.add_child('zero', c)
+main.add_child('clk', clock)
 visible = set()
 
 for i in range(1, bits+1):
     b = f'b{i}'
     a = f'a{i}'
     visible.add(f'/{b}/q/pin')
-    main.add_child(b, bistabil)
-    main.add_child(a, zbrajalo)
+    main.add_child(b, latch)
+    main.add_child(a, adder)
 
-for i in range(1, bits+1):
+l = list(range(1, bits+1))
+random.shuffle(l)
+for i in l:
     b = f'b{i}'
     a = f'a{i}'
     main.connect('clk', 'out', b, 'clk')
     main.connect(b, 'q', a, 'a')
-    main.connect('zero', 'out', a, 'b')
+
+random.shuffle(l)
+for i in l:
+    b = f'b{i}'
+    a = f'a{i}'
     if i < bits:
         main.connect(a, 'cout', f'a{i + 1}', 'cin')
     main.connect(a, 's', b, 'd')
@@ -119,21 +125,9 @@ burst_size = 1000
 sim = JIT(main, burst_size, True)
 sim.set_pin_state('/a1/cin/pin', 1)
 
-N = 10000
-iters = N * burst_size
-
-a = time()
-for i in range(iters):
+for j in range(10):
     sim.step()
-b = time()
-A = (b - a) / iters
-
-a = time()
-for i in range(N):
-    sim.burst()
-b = time()
-B = (b - a) / iters
-
-print('step', A)
-print('burst', B)
-print(A / B)
+    s = 0
+    for i in range(1, bits + 1):
+        s |= (1 << (i - 1)) * sim.get_pin_state(f'/b{i}/q/pin')
+    print(s)

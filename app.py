@@ -2,140 +2,19 @@ from collections import defaultdict
 from itertools import chain
 from enum import Enum
 
-from core.simulator import JIT
+from core.simulator import JIT, iter_simulation_topology
 from PySide6.QtWidgets import *
 from PySide6.QtCore import *
 from PySide6.QtGui import *
-from diagram import Schematic, EAST, Element, NORTH, SOUTH, WEST, rotate
+from diagram import DIRS, Schematic, Element
 from core.descriptors import ExposedPin, Gate, Not, Composite
+from editors import *
+
+import networkx as nx
 
 from version import format_version
 
 import pickle
-
-
-def make_line_edit(desc, attribute, callback=None):
-    value = getattr(desc, attribute)
-
-    le = QLineEdit()
-    le.setText(value)
-
-    def assigner():
-        txt = le.text().strip()
-        le.setText(txt)
-        setattr(desc, attribute, txt)
-        if callback is not None:
-            callback()
-
-    le.editingFinished.connect(assigner)
-
-    return le
-
-
-def make_spin_box(desc, attribute, min, max, callback=None):
-    value = getattr(desc, attribute)
-
-    sb = QSpinBox()
-    sb.setValue(value)
-    sb.setMinimum(min)
-    sb.setMaximum(max)
-
-    def assigner(value):
-        setattr(desc, attribute, value)
-        if callback is not None:
-            callback()
-
-    sb.valueChanged.connect(assigner)
-
-    return sb
-
-
-def make_check_box(desc, attribute, callback=None):
-    value = getattr(desc, attribute)
-
-    chk = QCheckBox()
-    chk.setChecked(value)
-
-    def assigner(value):
-        setattr(desc, attribute, bool(value))
-        if callback is not None:
-            callback()
-
-    chk.stateChanged.connect(assigner)
-
-    return chk
-
-
-def make_combo_box(desc, attribute, values, callback=None):
-    curr_value = getattr(desc, attribute)
-
-    cb = QComboBox()
-
-    for name, value in values.items():
-        cb.addItem(name, value)
-        if value == curr_value:
-            cb.setCurrentText(name)
-
-    def assigner(text):
-        setattr(desc, attribute, values[text])
-        if callback is not None:
-            callback()
-
-    cb.currentTextChanged.connect(assigner)
-
-    return cb
-
-
-class ElementEditor(QWidget):
-    edited = Signal()
-
-    def __init__(self, element):
-        super().__init__()
-        self.element = element
-        self.setLayout(QFormLayout())
-
-        self._make_widgets()
-
-    def _make_widgets(self):
-        element = self.element
-        desc = element.descriptor
-        layout = self.layout()
-
-        def emit_edited():
-            self.edited.emit()
-
-        layout.addRow('Name:', make_line_edit(
-            element, 'name', callback=emit_edited))
-
-        layout.addRow('Facing:', make_combo_box(element, 'facing', {
-            'East': EAST,
-            'North': NORTH,
-            'West': WEST,
-            'South': SOUTH
-        }, callback=emit_edited))
-
-        if isinstance(desc, Not):
-            layout.addRow('Width:', make_spin_box(
-                desc, 'width', 1, 64, callback=emit_edited))
-        elif isinstance(desc, Gate):
-            layout.addRow('Width:', make_spin_box(
-                desc, 'width', 1, 64, callback=emit_edited))
-            layout.addRow('Inputs:', make_spin_box(
-                desc, 'num_inputs', 2, 64, callback=emit_edited))
-            layout.addRow('Negated:', make_check_box(
-                desc, 'negated', callback=emit_edited))
-            layout.addRow('Logic:', make_combo_box(desc, 'op', {
-                'And': Gate.AND,
-                'Or': Gate.OR,
-                'Xor': Gate.XOR
-            }, callback=emit_edited))
-        elif isinstance(desc, ExposedPin):
-            layout.addRow('Width:', make_spin_box(
-                desc, 'width', 1, 64, callback=emit_edited))
-            layout.addRow('Direction:', make_combo_box(desc, 'direction', {
-                'In': ExposedPin.IN,
-                'Out': ExposedPin.OUT,
-            }, callback=emit_edited))
 
 
 class Mode(Enum):
@@ -153,9 +32,9 @@ class ViewState(Enum):
 class DiagramEditor(QWidget):
     element_selected = Signal(Element)
 
-    def __init__(self, diagram, grid_size=16):
+    def __init__(self, schematic: Schematic, grid_size=16):
         super().__init__()
-        self.diagram = diagram
+        self.schematic = schematic
         self.grid_size = grid_size
         self.executor = None
 
@@ -182,7 +61,7 @@ class DiagramEditor(QWidget):
         mode_action.activated.connect(self.toggle_interaction_mode)
 
         self.redraw_timer = QTimer()
-        self.redraw_timer.setInterval(1000 / 65)
+        self.redraw_timer.setInterval(250)
 
         def do_stuff():
             self.executor.step()
@@ -227,7 +106,7 @@ class DiagramEditor(QWidget):
         self.update()
 
     def delete_element(self, element):
-        self.diagram.remove_element(element)
+        self.schematic.remove_element(element)
         if self._state == EditState.SELECT and self._selected_element is element:
             self.unselect()
 
@@ -264,22 +143,22 @@ class DiagramEditor(QWidget):
     def element_at_position(self, pos):
         gs = self.grid_size
 
-        for element in self.diagram.elements:
+        for element in self.schematic.elements:
             facing = element.facing
-            x, y = element.position
-            xb, yb, w, h = element.bounding_rect
+            p = element.position
+            bb = element.get_bounding_rect()
 
             transform = QTransform()
-            transform.translate(x * gs, y * gs)
+            #transform.scale(gs, gs)
+            transform.translate(p.x() * gs, p.y() * gs)
             transform.rotate(facing * -90)
 
-            r = QRect(xb * gs, yb * gs, w * gs, h * gs)
-            r = transform.mapRect(r)
+            r = transform.mapRect(
+                QRect(bb.x() * gs, bb.y() * gs, bb.width() * gs, bb.height() * gs))
 
             for p, _ in chain(element.all_inputs(),
                               element.all_outputs()):
-                rx, ry = rotate(x, y, facing)
-                pt = QPoint(p[0] + rx, p[1] + ry) * gs
+                pt = (p + DIRS[facing]) * gs
                 if QVector2D(pt - pos).length() <= self.grid_size / 2:
                     return None
 
@@ -350,7 +229,7 @@ class DiagramEditor(QWidget):
             return
 
         if self._state == EditState.PLACE:
-            self._placing_element.position = (p.x(), p.y())
+            self._placing_element.position = p
             self.update()
         elif self._state == EditState.ELEMENT_CLICK:
             self._state = EditState.DRAG
@@ -385,16 +264,16 @@ class DiagramEditor(QWidget):
                     if isinstance(element.descriptor, ExposedPin):
                         desc = element.descriptor
                         if desc.direction == ExposedPin.IN:
-                            x, y = element.position
-                            xb, yb, w, h = element.bounding_rect
+                            p = element.position
+                            r = element.get_bounding_rect()
                             transform = QTransform()
-                            transform.translate(x * gs, y * gs)
+                            transform.translate(p.x() * gs, p.y() * gs)
                             transform.rotate(element.facing * -90)
                             state = self.executor.get_pin_state(
                                 '/' + element.name + '/pin')
                             for i in range(desc.width):
-                                r = QRect(xb * gs + gs / 8 + i * gs, yb * gs + h / 8 * gs + h * gs / 8 * 6 / 8,
-                                          gs / 8 * 6, h * gs / 8 * 6 / 8 * 6)
+                                r = QRect(r.x() * gs + gs / 8 + i * gs, r.y() * gs + r.height() / 8 * gs + r.height() * gs / 8 * 6 / 8,
+                                          gs / 8 * 6, r.height() * gs / 8 * 6 / 8 * 6)
                                 r = transform.mapRect(r)
                                 if r.contains(d):
                                     state ^= 1 << i
@@ -407,30 +286,27 @@ class DiagramEditor(QWidget):
 
         if self._state == EditState.PLACE:
             self._state = EditState.SELECT
-            self.diagram.add_element(self._placing_element)
+            self.schematic.add_element(self._placing_element)
             self._selected_element = self._placing_element
             self.element_selected.emit(self._selected_element)
             self.update()
         elif self._state == EditState.DRAG:
             el = self._selected_element
-            pos = QPoint(*el.position)
+            pos = el.position
             pos += self._end - self._start
-            el.position = (pos.x(), pos.y())
             self._state = EditState.NONE
             self.update()
         elif self._state == EditState.WIRE:
             wires = self._get_wire()
             if wires is not None:
-                self.diagram.change_wires(wires)
+                self.schematic.change_wires(wires)
             self._state = EditState.NONE
             self.update()
         elif self._state == EditState.ELEMENT_CLICK:
             self._state = EditState.SELECT
             self.update()
         elif self._state == EditState.EMPTY_CLICK:
-            node = self.diagram.wires.get((p.x(), p.y()))
-            if node is not None and node.all_connected():
-                node.overlap ^= True
+            self.schematic.overlap(p)
             self._state = EditState.NONE
             self.update()
 
@@ -454,8 +330,9 @@ class DiagramEditor(QWidget):
     def paint_element(self, painter: QPainter, element: Element, position, ghost, selected):
         gs = self.grid_size
         facing = element.facing
-        x, y = position
-        xb, yb, w, h = element.bounding_rect
+        x, y = position.x(), position.y()
+        bb = element.get_bounding_rect()
+        xb, yb, w, h = bb.topLeft().x(), bb.topLeft().y(), bb.width(), bb.height()
 
         if ghost:
             black = QColor.fromRgbF(0.0, 0.0, 0.0, 0.5)
@@ -576,7 +453,7 @@ class DiagramEditor(QWidget):
                 pins = list()
                 for pos, _ in chain(element.all_inputs(),
                                     element.all_outputs()):
-                    pins.append(QPoint(pos[0], pos[1]) * gs)
+                    pins.append(pos * gs)
 
                 painter.setPen(QPen(black, 6.0))
                 painter.drawPoints(pins)
@@ -596,8 +473,11 @@ class DiagramEditor(QWidget):
                     painter.setPen(QPen(Qt.black, 6.0))
                 else:
                     painter.setPen(QPen(Qt.green, 6.0))
-                p = QPoint(pos[0], pos[1]) * gs
+                p = pos * gs
                 painter.drawPoint(p)
+
+        painter.setPen(Qt.black)
+        painter.drawText(QPoint(xb, yb) * gs, element.name)
 
         painter.restore()
 
@@ -625,7 +505,7 @@ class DiagramEditor(QWidget):
 
         painter.translate(trans)
 
-        for element in self.diagram.elements:
+        for element in self.schematic.elements:
             if self._state == EditState.DRAG and self._selected_element is element:
                 continue
 
@@ -638,36 +518,36 @@ class DiagramEditor(QWidget):
             if self._state == EditState.DRAG:
                 element = self._selected_element
                 delta = self._end - self._start
-                x, y = element.position
-                x += delta.x()
-                y += delta.y()
+                p = element.position
+                p = p + delta
             else:
                 element = self._placing_element
-                x, y = element.position
+                p = element.position
 
             self.paint_element(
-                painter, element, (x, y), True, False)
+                painter, element, p, True, False)
 
         wires = list()
 
         if self._state == EditState.WIRE:
             curr_wires = self._get_wire()
             if curr_wires is not None:
-                wiremap = self.diagram.construct_wires(curr_wires)
-            else:
-                wiremap = self.diagram.wires
-        else:
-            wiremap = self.diagram.wires
+                self.schematic.construct_wires(curr_wires)
+
+        wiremap = self.schematic.wires
 
         painter.setPen(QPen(wire_col, 4.0))
 
-        for pos, node in wiremap.items():
-            if node.all_connected() and not node.overlap:
-                painter.drawPoint(QPoint(*pos) * gs)
-            for dir in range(4):
-                if node.connections[dir]:
-                    p1 = QPoint(*pos) * gs
-                    p2 = QPoint(*rotate(1, 0, dir)) * gs + p1
+        for node in wiremap.nodes:
+            if self.schematic.all_connected(node):
+                painter.drawPoint(node * gs)
+                cc = False
+            else:
+                cc = self.schematic.cross_connected(node)
+            for d in DIRS:
+                if wiremap.has_edge(node, node + d) or cc:
+                    p1 = QPoint(node) * gs
+                    p2 = QPoint(node + d) * gs
                     wires.append(QLine(p1, p2))
 
         painter.setPen(QPen(wire_col, 2.0))
@@ -728,7 +608,7 @@ class MainWindow(QMainWindow):
 
         def open_project():
             nonlocal diagrams, diagram_count
-            diag.diagram = Schematic('')
+            diag.schematic = Schematic('')
             diagram_tree.clear()
             f = QFileDialog.getOpenFileName(self, 'Open Project')[0]
             with open(f, 'rb') as file:
@@ -740,7 +620,7 @@ class MainWindow(QMainWindow):
                     it.setData(Qt.UserRole, d)
                     diagram_tree.addItem(it)
                     if d.name == 'main':
-                        diag.diagram = d
+                        diag.schematic = d
 
         def save_project():
             f = QFileDialog.getSaveFileName(self, 'Save Project')[0]
@@ -778,7 +658,7 @@ class MainWindow(QMainWindow):
         diagram_tree = QListWidget()
 
         def change_diagram(item):
-            diag.diagram = item.data(Qt.UserRole)
+            diag.schematic = item.data(Qt.UserRole)
             diag.stop_placing()
 
         counter = defaultdict(int)
@@ -848,8 +728,9 @@ class MainWindow(QMainWindow):
                 diag.redraw_timer.stop()
             else:
                 simulate_btn.setText('Stop')
-                diag.diagram.reconstruct()
-                s = diag.diagram.composite
+                diag.schematic.reconstruct()
+                s = diag.schematic.composite
+                print(list(nx.dfs_postorder_nodes(s.graph)))
                 exe = JIT(s, 500, True)
                 diag.executor = exe
                 diag.redraw_timer.start()
@@ -868,7 +749,7 @@ class MainWindow(QMainWindow):
             if element is None:
                 element_editor_dock.setWidget(None)
             else:
-                ed = ElementEditor(element)
+                ed = ElementPropertyEditor(element)
                 ed.edited.connect(diag.update)
                 element_editor_dock.setWidget(ed)
                 ed.show()
