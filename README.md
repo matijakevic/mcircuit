@@ -11,16 +11,18 @@ Thanks to Logisim for inspiration.
 
 ## Dependencies
 - Python 3
-- PySide 2
+- PySide 6
+- networkx
+- llvmlite
 - bidict
-- llvmlite (optional)
 
-I recommend using Python 3.8 for now, because llvmlite
-wheels for 3.9 aren't available yet.
-
-If llvmlite cannot be imported, the simulator will
-use the custom interpreter (which is very slow).
+Tested on Python 3.9.5
 
 ## Running
 1. install dependencies: `pip install -r requirements.txt`
 2. run: `python main.py`
+
+## Support
+I am working on this alongside work & college, whenever I have some free time.
+
+[![Tip](https://img.shields.io/badge/Tip-%24-blue)](https://streamelements.com/lordborne/tip)
