@@ -24,3 +24,8 @@ use the custom interpreter (which is very slow).
 ## Running
 1. install dependencies: `pip install -r requirements.txt`
 2. run: `python main.py`
+
+## Support
+I am working on this alongside work & college, whenever I have some free time.
+
+[![Tip](https://img.shields.io/badge/Tip-%24-blue)](https://streamelements.com/lordborne/tip)
