@@ -613,7 +613,6 @@ class MainWindow(QMainWindow):
             f = QFileDialog.getOpenFileName(self, 'Open Project')[0]
             with open(f, 'rb') as file:
                 diagrams = pickle.load(file)
-                print(diagrams)
                 for d in diagrams:
                     diagram_count += 1
                     it = QListWidgetItem(d.name)
@@ -730,7 +729,6 @@ class MainWindow(QMainWindow):
                 simulate_btn.setText('Stop')
                 diag.schematic.reconstruct()
                 s = diag.schematic.composite
-                print(list(nx.dfs_postorder_nodes(s.graph)))
                 exe = JIT(s, 500, True)
                 diag.executor = exe
                 diag.redraw_timer.start()

@@ -86,7 +86,9 @@ class Schematic:
         self.composite = Composite()
 
     def reconstruct(self):
-        s = self.composite = Composite()
+        s = self.composite
+        s.graph.clear()
+        s.connections.clear()
 
         sources = list()
         dests = list()

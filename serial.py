@@ -4,7 +4,7 @@ from bidict import bidict
 
 from version import VERSION
 
-from descriptors import ExposedPin, Gate, Not, Composite
+from core.descriptors import ExposedPin, Gate, Not, Composite
 
 
 _DESC_TO_NAME = bidict({
